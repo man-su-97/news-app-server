@@ -5,7 +5,7 @@ from email.utils import parsedate_to_datetime
 logger = logging.getLogger(__name__)
 
 
-def _parse_date(raw: str | None) -> datetime | None:
+def parse_date(raw: str | None) -> datetime | None:
     """Try RFC 2822 (RSS), then ISO 8601 (REST APIs). Return UTC datetime or None."""
     if not raw:
         return None
@@ -21,29 +21,35 @@ def _parse_date(raw: str | None) -> datetime | None:
     return None
 
 
-def _to_plain_dict(obj) -> object:
+def to_plain_dict(obj) -> object:
     """Recursively coerce feedparser objects and other non-JSON types to plain Python types.
 
     feedparser returns FeedParserDict (a dict subclass with attribute access) and
-    custom structs. Storing them directly into JSONB crashes because SQLAlchemy's
-    JSON serialiser expects plain dicts/lists/scalars.
+    custom structs. Storing them directly into SQLAlchemy's JSONB column crashes
+    because it expects plain dicts/lists/scalars. This function is idempotent — safe
+    to call on already-plain dicts (used by IngestionService before store_batch).
     """
     if isinstance(obj, dict):
-        return {k: _to_plain_dict(v) for k, v in obj.items()}
+        return {k: to_plain_dict(v) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_to_plain_dict(v) for v in obj]
+        return [to_plain_dict(v) for v in obj]
     if isinstance(obj, (str, int, float, bool)) or obj is None:
         return obj
     # feedparser special types — coerce via items()
     try:
-        return {k: _to_plain_dict(v) for k, v in obj.items()}
+        return {k: to_plain_dict(v) for k, v in obj.items()}
     except Exception:
         return str(obj)
 
 
 def normalize(item) -> dict:
-    """Convert a raw RSS entry or REST API item into the canonical article dict."""
-    raw: dict = _to_plain_dict(item)  # type: ignore[assignment]
+    """Convert a raw RSS entry or REST API item into the canonical article dict.
+
+    Accepts either a feedparser FeedParserDict or a plain dict (idempotent — the
+    to_plain_dict call is a no-op on already-plain dicts, so callers that pre-coerce
+    for raw event storage do not pay a correctness penalty).
+    """
+    raw: dict = to_plain_dict(item)  # type: ignore[assignment]
 
     # image: prefer media:thumbnail (RSS), fall back to image_url (REST)
     image_url: str | None = None
@@ -59,7 +65,7 @@ def normalize(item) -> dict:
         "content": None,
         "url": raw.get("link") or raw.get("url") or "",
         "image_url": image_url,
-        "published_at": _parse_date(
+        "published_at": parse_date(
             raw.get("published") or raw.get("publishedAt") or raw.get("published_at")
         ),
         "raw_payload": raw,

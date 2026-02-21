@@ -11,7 +11,9 @@ from alembic import context
 # Register all models so their tables appear in target_metadata
 # ---------------------------------------------------------------------------
 from app.models.base import Base  # noqa: E402
+import app.models.ai_provider  # noqa: F401, E402
 import app.models.article  # noqa: F401, E402
+import app.models.raw_event  # noqa: F401, E402
 import app.models.source  # noqa: F401, E402
 
 from app.core.config import settings  # noqa: E402
