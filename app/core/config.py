@@ -72,6 +72,34 @@ class Settings(BaseSettings):
     AI_RETRY_ATTEMPTS: int = 3
     AI_RETRY_DELAY_SECONDS: float = 15.0
 
+    # --- Scheduler intervals ---
+    # How often to run each background job. Change without code edits.
+    INGEST_INTERVAL_MINUTES: int = 5
+    PUBLISH_INTERVAL_MINUTES: int = 5
+    # Seconds to wait after ingestion starts before running publish.
+    # Gives the ingestion job time to write post_processed_articles first.
+    PUBLISH_OFFSET_SECONDS: int = 30
+
+    # --- Feed size ---
+    # Number of articles selected by PublishingService for the final_articles feed.
+    # 20 is good for a mobile card carousel; increase to 50 for a web dashboard.
+    FEED_TOP_N: int = 20
+
+    # --- DuckDuckGo web search ---
+    # Timeout in seconds for each DuckDuckGo call during Stage 2 post-processing.
+    # If the search hangs longer than this, it is cancelled gracefully and the
+    # article proceeds without reference URLs (non-fatal).
+    DUCKDUCKGO_TIMEOUT_SECONDS: float = 10.0
+
+    # --- Time-decay ranking (PublishingService) ---
+    # rank_score = imp_score × decay_factor  (result range: 0.1 – 100.0)
+    # Lower decay_factor = older articles ranked lower in the final feed.
+    DECAY_FRESH: float = 1.00     # published < 6 hours ago
+    DECAY_RECENT: float = 0.75    # published 6-24 hours ago
+    DECAY_DAY: float = 0.50       # published 1-3 days ago
+    DECAY_WEEK: float = 0.25      # published 3-7 days ago
+    DECAY_OLD: float = 0.10       # published > 7 days ago
+
     # Tell pydantic-settings where to find the .env file.
     # env_file_encoding ensures proper reading of special characters in API keys.
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

@@ -54,9 +54,11 @@ context. Your task: extract article fields AND classify the crime content in ONE
 
 Rules:
 - Return ONLY valid JSON. No markdown, no prose, no code fences.
-- title: required. If absent, derive from the first sentence of description.
+- title: required. Extract exactly as provided by the source — do not rephrase or modify.
+  If absent, derive from the first sentence of the content.
 - url: absolute HTTP(S) URL, or null if absent or relative.
-- description: 1-3 sentence factual summary, or null if no content.
+- description: Extract the description or body text from the raw content as-is (clean HTML tags
+  if present). 1-3 sentences. null if there is no usable content.
 - published_at: ISO 8601 UTC (e.g. "2024-01-15T10:30:00Z"), or null.
 - image_url: absolute HTTP(S) URL, or null.
 - is_crime: true if the article is primarily about criminal activity, false otherwise.
@@ -222,19 +224,25 @@ class CombinedOutput(BaseModel):
 #   - Splitting reduces wasted compute on non-crime articles (typically 50-90% of raw feed).
 POST_PROCESS_PROMPT = """\
 You are a senior crime news editor for a real-time news platform.
-You receive a pre-classified crime news article (title, description, URL, crime type).
-Your task: produce a publication-ready version with improved writing and an importance score.
+You receive a pre-classified crime news article (title, description, URL, crime type)
+and web search results showing similar coverage of this story across the internet.
+Your task: produce a publication-ready version with rephrased writing, reference links,
+and an importance score.
 
 Rules:
 - Return ONLY valid JSON. No markdown, no prose, no code fences.
-- rewritten_title: rewrite the headline to be clear, factual, and engaging (max 15 words).
-  Do NOT sensationalise. Use active voice. Include location if known.
-- rewritten_description: write a 2-3 sentence factual summary for a news card.
-  Include: what happened, who is involved (if known), where it occurred.
-  Do NOT include personal opinions or speculation.
-- reference_urls: list up to 5 related URLs from the web_search_context (if provided).
-  Only include URLs you find in the provided context — do NOT invent URLs.
-  Empty array [] if no web context is provided or no relevant URLs found.
+- rewritten_title: rephrase the headline in your own words — do NOT copy the source verbatim
+  (plagiarism concern). Max 15 words, active voice, factual. Include location if known.
+- rewritten_description: rephrase in your own words (~100 words, 4-6 sentences).
+  Cover: what happened, who is involved (if known), where it occurred, key context.
+  Do NOT copy source text verbatim. Do NOT include personal opinions or speculation.
+- reference_urls: extract up to 5 URLs of SIMILAR or RELATED news articles found in
+  web_search_context. These are reference links shown to readers wanting more coverage.
+  Rules for reference_urls:
+    * Only include URLs actually present in web_search_context — never invent URLs.
+    * Prefer news sources (BBC, Reuters, NDTV, Times of India, Hindu, etc.).
+    * Do NOT include the original article's own URL.
+    * Return [] if web_search_context is absent or contains no relevant URLs.
 - imp_score: integer 1-100 importance score.
     1-20:   Hyperlocal / minor incident (e.g. petty theft in a small town)
     21-40:  Local / notable (e.g. single murder in a major city)
@@ -242,7 +250,7 @@ Rules:
     61-80:  National / high impact (e.g. major terrorism foiled, senior official arrested)
     81-100: International / breaking crisis (e.g. multi-city attack, political assassination)
   Factors: crime severity, number of victims, geographic scope, public official involvement,
-           media coverage breadth (use web_search_context to calibrate), recency.
+           breadth of web_search_context coverage, recency.
 
 Output schema (return exactly this shape, nothing else):
 {

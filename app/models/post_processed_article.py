@@ -46,7 +46,7 @@ class PostProcessedArticle(Base):
     # SET NULL: if the filter article is deleted, this record can remain as a
     # standalone published record.
     filter_article_id: Mapped[int | None] = mapped_column(
-        ForeignKey("filter_articles.id", ondelete="SET NULL"),
+        ForeignKey("filtered_articles.id", ondelete="SET NULL"),
         nullable=True,
         unique=True,     # enforces one-to-one at DB level
         index=True,

@@ -25,7 +25,7 @@ class MasterCategoryRepository:
     async def get_all(self, active_only: bool = False) -> list[MasterCategory]:
         stmt = select(MasterCategory).order_by(MasterCategory.priority_point, MasterCategory.id)
         if active_only:
-            stmt = stmt.where(MasterCategory.is_active == True)  # noqa: E712
+            stmt = stmt.where(MasterCategory.is_active.is_(True))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
@@ -55,7 +55,7 @@ class MasterSubCategoryRepository:
         if category_id is not None:
             stmt = stmt.where(MasterSubCategory.category_id == category_id)
         if active_only:
-            stmt = stmt.where(MasterSubCategory.is_active == True)  # noqa: E712
+            stmt = stmt.where(MasterSubCategory.is_active.is_(True))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

@@ -34,42 +34,38 @@ Design decisions:
 import logging
 from datetime import datetime, timezone
 
+from app.core.config import settings
 from app.models.post_processed_article import PostProcessedArticle
 from app.repositories.final_article_repo import FinalArticleRepository
 from app.repositories.post_processed_article_repo import PostProcessedArticleRepository
 
 logger = logging.getLogger(__name__)
 
-# --- Ranking constants ---
-_DECAY_FULL = 1.0      # articles published < 6h ago
-_DECAY_RECENT = 0.75   # 6-24h
-_DECAY_DAY = 0.50      # 1-3 days
-_DECAY_WEEK = 0.25     # 3-7 days
-_DECAY_OLD = 0.10      # > 7 days
-
 
 def _time_decay_factor(published_at: datetime | None) -> float:
-    """Return a 0.1-1.0 time decay multiplier based on article age."""
+    """Return a time decay multiplier based on article age.
+
+    Thresholds and values come from settings (DECAY_* env vars) so editorial
+    policy can be tuned without a code change or redeploy.
+    """
     if published_at is None:
-        # No publish time → treat as 1 day old (moderate decay)
-        return _DECAY_DAY
+        return settings.DECAY_DAY   # No publish time → treat as 1 day old
 
     now = datetime.now(tz=timezone.utc)
-    # Ensure timezone-aware comparison
     if published_at.tzinfo is None:
         published_at = published_at.replace(tzinfo=timezone.utc)
 
     hours_old = (now - published_at).total_seconds() / 3600
 
     if hours_old < 6:
-        return _DECAY_FULL
+        return settings.DECAY_FRESH
     if hours_old < 24:
-        return _DECAY_RECENT
-    if hours_old < 72:       # 3 days
-        return _DECAY_DAY
-    if hours_old < 168:      # 7 days
-        return _DECAY_WEEK
-    return _DECAY_OLD
+        return settings.DECAY_RECENT
+    if hours_old < 72:
+        return settings.DECAY_DAY
+    if hours_old < 168:
+        return settings.DECAY_WEEK
+    return settings.DECAY_OLD
 
 
 def _compute_rank_score(article: PostProcessedArticle) -> float:

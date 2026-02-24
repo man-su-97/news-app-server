@@ -25,6 +25,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.repositories.ai_provider_repo import AIProviderRepository
 from app.repositories.filter_article_repo import FilterArticleRepository
@@ -122,7 +123,7 @@ async def run_publishing() -> None:
             post_processed_repo=PostProcessedArticleRepository(db),
             final_article_repo=FinalArticleRepository(db),
         )
-        count = await svc.publish(top_n=20)
+        count = await svc.publish(top_n=settings.FEED_TOP_N)
     logger.info("Scheduled publishing complete: %d final_articles rows written", count)
 
 
@@ -139,7 +140,7 @@ def start_scheduler() -> None:
     scheduler.add_job(
         run_ingestion_for_all_active_sources,
         trigger="interval",
-        minutes=5,
+        minutes=settings.INGEST_INTERVAL_MINUTES,
         id="ingestion_all_sources",
         replace_existing=True,
         max_instances=1,
@@ -147,15 +148,18 @@ def start_scheduler() -> None:
     scheduler.add_job(
         run_publishing,
         trigger="interval",
-        minutes=5,
-        seconds=30,   # 30-second lag so ingestion finishes writing first
+        minutes=settings.PUBLISH_INTERVAL_MINUTES,
+        seconds=settings.PUBLISH_OFFSET_SECONDS,
         id="publish_final_feed",
         replace_existing=True,
         max_instances=1,
     )
     scheduler.start()
     logger.info(
-        "Scheduler started — ingestion every 5min, publishing every 5min (+30s offset)"
+        "Scheduler started — ingestion every %dmin, publishing every %dmin (+%ds offset)",
+        settings.INGEST_INTERVAL_MINUTES,
+        settings.PUBLISH_INTERVAL_MINUTES,
+        settings.PUBLISH_OFFSET_SECONDS,
     )
 
 

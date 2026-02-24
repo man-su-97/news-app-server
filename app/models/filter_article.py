@@ -3,20 +3,21 @@ app/models/filter_article.py — AI Filter Stage Output Table
 ============================================================
 Stores articles that have passed the AI crime-relevance filter.
 
-Pipeline position:  raw_ingestion → filter_articles → post_processed_articles
+Pipeline position:  raw_ingestion → filtered_articles → post_processed_articles
 
 When the AI filter processes a raw_ingestion row:
   - Non-crime content  → raw_ingestion.status = "filtered_out", no row created here
-  - Crime-relevant     → a FilterArticle row is created with normalised fields
+  - Crime-relevant     → a FilterArticle row is created with AI-rewritten fields
                          and raw_ingestion.status = "filtered"
 
-The filter stage extracts only the essential display fields from the raw payload:
-  title, description, image_url, main_url, published_at, sub_category_id
+The filter stage extracts and classifies each article:
+  title (extracted as-is from the source), description (extracted body text, cleaned),
+  image_url, main_url, published_at, sub_category_ids, category_ids
 
 The subsequent post-processing stage (PostProcessedArticle) reads from this table
-and produces the publication-ready version.
+and produces the publication-ready version with further enrichment.
 
-Table: filter_articles
+Table: filtered_articles
 """
 
 from __future__ import annotations
@@ -32,7 +33,6 @@ from app.models.base import Base
 
 if TYPE_CHECKING:
     from app.models.raw_event import RawIngestion
-    from app.models.category import MasterSubCategory
     from app.models.location import State
     from app.models.post_processed_article import PostProcessedArticle
 
@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 class FilterArticle(Base):
     """One row = one crime-relevant article that survived the AI filter stage."""
 
-    __tablename__ = "filter_articles"
+    __tablename__ = "filtered_articles"
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
@@ -55,12 +55,13 @@ class FilterArticle(Base):
         index=True,
     )
 
-    # --- AI-extracted article fields ---
+    # --- AI-rewritten article fields ---
 
-    # Cleaned/normalised headline from the AI filter.
+    # Title extracted as-is from the source. Rephrasing happens in Stage 2 (post_processed_articles).
     title: Mapped[str] = mapped_column(String, nullable=False, index=True)
 
-    # Short description extracted or cleaned from the raw payload.
+    # Body text extracted and HTML-cleaned from the source. 1-3 sentences.
+    # Rephrasing and ~100-word rewrite happens in Stage 2 (post_processed_articles).
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Thumbnail image URL.
@@ -69,7 +70,7 @@ class FilterArticle(Base):
     # Canonical URL of the original article on the source website.
     main_url: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
 
-    # When this filter_article row was created in our DB.
+    # When this filtered_article row was created in our DB.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -80,19 +81,18 @@ class FilterArticle(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
 
-    # Crime sub-category assigned by the AI filter (legacy single-FK).
-    # Kept for backward compatibility; new code writes sub_category_ids instead.
-    # Will be dropped in a future cleanup migration.
-    sub_category_id: Mapped[int | None] = mapped_column(
-        ForeignKey("master_sub_category.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
     # Multi-label crime classification: JSONB array of master_sub_category.id ints.
     # Example: [1, 3] = Murder + Terrorism.
     # Default empty list so JSON containment queries (@>) work without NULL-checks.
     sub_category_ids: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default="'[]'::jsonb", default=list
+    )
+
+    # Parent category IDs derived from sub_category_ids.
+    # JSONB array of master_category.id ints.
+    # Example: sub_category_ids=[1, 3] → category_ids=[1, 2]
+    # Populated by CategoryResolver.resolve_categories_from_ids() in IngestionService.
+    category_ids: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default="'[]'::jsonb", default=list
     )
 
@@ -108,9 +108,6 @@ class FilterArticle(Base):
     # --- Relationships ---
     raw_ingestion: Mapped["RawIngestion | None"] = relationship(  # noqa: F821
         "RawIngestion", back_populates="filter_article"
-    )
-    sub_category: Mapped["MasterSubCategory | None"] = relationship(  # noqa: F821
-        "MasterSubCategory", back_populates="filter_articles"
     )
     location_state: Mapped["State | None"] = relationship(  # noqa: F821
         "State", foreign_keys=[location_state_id]

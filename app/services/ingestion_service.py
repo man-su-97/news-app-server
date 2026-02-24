@@ -149,8 +149,6 @@ class IngestionService:
         post_processed_repo: PostProcessedArticleRepository | None = None,
         ai_provider_repo: AIProviderRepository | None = None,
         db: AsyncSession | None = None,
-        # Kept for backwards compatibility — ignored in new pipeline
-        article_repo: object | None = None,
     ) -> None:
         self.source_repo = source_repo
         self.raw_repo = raw_repo
@@ -269,13 +267,19 @@ class IngestionService:
         if crime_articles and (cat_resolver or loc_resolver):
             for article in crime_articles:
                 if cat_resolver:
-                    # Legacy single FK (kept for backward compat)
-                    article["sub_category_id"] = cat_resolver.resolve(
-                        article.get("sub_category")
-                    )
-                    # New multi-label JSONB array — resolve each AI string to a DB id
+                    # Multi-label JSONB array — resolve each AI string to a DB id
+                    # Used for filtered_articles.sub_category_ids
                     article["sub_category_ids"] = cat_resolver.resolve_all(
                         article.get("sub_category_ids", [])
+                    )
+                    # Parent category IDs derived from sub_category_ids
+                    # Used for filtered_articles.category_ids
+                    article["category_ids"] = cat_resolver.resolve_categories_from_ids(
+                        article["sub_category_ids"]
+                    )
+                    # Single best-match FK used by post_processed_articles.sub_category_id
+                    article["sub_category_id"] = cat_resolver.resolve(
+                        article.get("sub_category")
                     )
                 if loc_resolver:
                     state_id = loc_resolver.resolve(article.get("location"))
@@ -428,34 +432,77 @@ class IngestionService:
     ) -> list[dict]:
         """Run stage 2 post-processing concurrently for all crime articles.
 
-        Calls ai_provider.post_process() for each article. If the provider
-        does not support post_process() (returns None), the article is returned
-        unchanged — stage 1 data is used as-is in post_processed_articles.
+        For each crime article:
+          1. DuckDuckGo search (outside AI rate limiter) — finds similar news articles
+             whose URLs will be stored as reference_urls for the frontend "read more" links.
+          2. AI post_process() call (rate-limited) — rewrites title/description,
+             extracts reference_urls from search context, computes imp_score 1-100.
 
-        Uses the SAME rate_limiter and semaphore as stage 1 so both stages
-        share the same per-minute budget — no burst between stages.
+        Uses the SAME rate_limiter and semaphore as stage 1 for the AI call only.
+        DuckDuckGo is free and not rate-limited by the AI quota.
 
         Returns the same list with stage 2 fields merged in where available:
-          - rewritten_title, rewritten_description, reference_urls, imp_score
+          - rewritten_title, rewritten_description, stage2_reference_urls, imp_score
         """
+        # Initialise DuckDuckGo search tool once — reused for all articles.
+        # GeminiLangGraphProvider does its own search inside post_process(); passing
+        # a non-empty search_context causes it to skip its internal search (no double-search).
+        _search_tool = None
+        try:
+            from langchain_community.tools import DuckDuckGoSearchResults
+            _search_tool = DuckDuckGoSearchResults(max_results=5)
+        except Exception as exc:
+            logger.warning("DuckDuckGo search unavailable — reference_urls will be empty: %s", exc)
+
+        async def _search_for_article(title: str) -> str:
+            """Run DuckDuckGo for a single article title. Returns result string or ''.
+
+            Wrapped in asyncio.wait_for to prevent a slow/hung DuckDuckGo
+            response from blocking the entire ingestion pipeline indefinitely.
+            """
+            if not _search_tool or not title:
+                return ""
+            try:
+                results = await asyncio.wait_for(
+                    _search_tool.ainvoke(f"{title} crime news"),
+                    timeout=settings.DUCKDUCKGO_TIMEOUT_SECONDS,
+                )
+                return str(results)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "DuckDuckGo search timed out after %.0fs for title=%r",
+                    settings.DUCKDUCKGO_TIMEOUT_SECONDS,
+                    title[:60],
+                )
+                return ""
+            except Exception as exc:
+                logger.warning("DuckDuckGo search failed (non-fatal): %s", exc)
+                return ""
+
         async def post_process_one(article: dict) -> dict:
+            # Step 1: web search — runs OUTSIDE the AI semaphore (not an AI call)
+            search_context = await _search_for_article(article.get("title", ""))
+
+            # Step 2: AI post-processing — rate-limited
+            # Use default-arg capture (a=article, sc=search_context) to bind
+            # the current values at lambda creation time (avoids closure pitfall).
             async with semaphore:
                 await rate_limiter.wait()
                 result = await self._call_with_retry(
-                    lambda: ai_provider.post_process(article),
+                    lambda a=article, sc=search_context: ai_provider.post_process(a, sc),
                     "ai_provider.post_process",
                 )
 
             if result:
-                # Merge stage 2 fields into the article dict
                 article["rewritten_title"] = result.get("rewritten_title")
                 article["rewritten_description"] = result.get("rewritten_description")
-                article["stage2_reference_urls"] = result.get("reference_urls", [])
+                article["stage2_reference_urls"] = result.get("reference_urls") or []
                 article["imp_score"] = result.get("imp_score")
                 logger.debug(
-                    "Stage 2 done: imp_score=%s title=%r",
+                    "Stage 2 done: imp_score=%s ref_urls=%d title=%r",
                     article["imp_score"],
-                    (article["rewritten_title"] or article["title"])[:60],
+                    len(article["stage2_reference_urls"]),
+                    (article.get("rewritten_title") or article["title"])[:60],
                 )
             return article
 

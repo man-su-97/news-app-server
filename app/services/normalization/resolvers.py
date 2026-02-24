@@ -3,46 +3,43 @@ app/services/normalization/resolvers.py — FK Resolvers for AI Output
 =====================================================================
 Two resolver classes that translate AI free-text output into database FK ids.
 
-Loaded ONCE per ingest run (not per article) to avoid N+1 DB queries:
   CategoryResolver  — maps AI sub_category string → master_sub_category.id
-  LocationResolver  — maps AI location string → state.id (best-effort)
+                      Uses IntEnum constants (app.core.enums) — NO DB query.
+                      Sub_category→category parent lookup is also enum-based.
+
+  LocationResolver  — maps AI location string → state.id (best-effort).
+                      Still loaded from DB (state names are too many for hardcoding).
 
 Usage pattern in IngestionService:
     cat_resolver, loc_resolver = await load_resolvers(db)
     for article in crime_articles:
-        article["sub_category_id"] = cat_resolver.resolve(article.get("sub_category"))
-        article["location_id"]     = loc_resolver.resolve(article.get("location"))
+        article["sub_category_ids"] = cat_resolver.resolve_all(article.get("sub_category_ids", []))
+        article["category_ids"]     = cat_resolver.resolve_categories_from_ids(article["sub_category_ids"])
+        article["sub_category_id"]  = cat_resolver.resolve(article.get("sub_category"))  # post_processed FK
+        article["location_id"]      = loc_resolver.resolve(article.get("location"))
 
-Why load once per ingest run?
-  Taxonomy tables (master_sub_category, state) change rarely.
-  Loading them once and resolving from an in-memory dict is:
-    - Faster: 2 DB queries per run instead of 2 per article
-    - Safe: resolvers are request-scoped; stale data is refreshed next run
+Why enums instead of DB lookups for categories?
+  The seed migration (i5j6k7l8m901) hardcodes stable integer IDs for the 8
+  categories and 10 sub-categories. The AI is constrained to exactly those 10
+  sub_category strings. Using IntEnum:
+    - Eliminates 1 DB query per ingest run (was SELECT from master_sub_category)
+    - Reduces per-article work from 2 dict lookups to 1
+    - Makes the mapping type-safe and self-documenting
 """
 
 import logging
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.enums import (
+    AI_STRING_TO_SUB_CATEGORY,
+    SUB_CATEGORY_TO_CATEGORY,
+    SubCategoryEnum,
+    CategoryEnum,
+)
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# AI sub_category string → master_sub_category.name mapping
-# ---------------------------------------------------------------------------
-# The AI is prompted to return exactly one of these 10 strings (lowercase).
-# The DB stores human-readable names. This dict bridges the gap.
-_AI_SUBCATEGORY_TO_NAME: dict[str, str] = {
-    "murder":      "Murder",
-    "violence":    "Violence",
-    "terrorism":   "Terrorism",
-    "fraud":       "Fraud",
-    "corruption":  "Corruption",
-    "cybercrime":  "Cybercrime",
-    "drugs":       "Drug Trafficking",
-    "theft":       "Theft",
-    "trafficking": "Human Trafficking",
-    "other":       "Other",
-}
 
 # ---------------------------------------------------------------------------
 # City / locality → Indian state name mapping
@@ -189,49 +186,70 @@ _CITY_TO_STATE: dict[str, str] = {
 
 
 class CategoryResolver:
-    """Maps the AI's sub_category string to a master_sub_category FK id.
+    """Resolves AI sub_category strings to DB IDs using IntEnum constants.
 
-    Loaded once from DB, then resolves from an in-memory dict.
-    Logs a warning if an unrecognised AI string is encountered (future-proofing).
+    No DB query required — IDs are fixed by the seed migration (i5j6k7l8m901)
+    and the AI is constrained to exactly 10 sub_category strings.
+
+    Methods:
+      resolve(ai_str)                 → sub_category int ID (or None)
+      resolve_all(ai_str_list)        → list of sub_category int IDs
+      resolve_categories_from_ids(ids) → list of parent category int IDs
     """
 
-    def __init__(self, name_to_id: dict[str, int]) -> None:
-        # {sub_category_name_lower: id}  e.g. {"murder": 1, "cybercrime": 6}
-        self._name_to_id = name_to_id
-
     def resolve(self, ai_sub_category: str | None) -> int | None:
-        """Return master_sub_category.id for the given AI string, or None."""
+        """Return master_sub_category.id for the given AI string, or None.
+
+        Example: resolve("murder") → 1
+        """
         if not ai_sub_category:
             return None
-        ai_str = ai_sub_category.lower().strip()
-        db_name = _AI_SUBCATEGORY_TO_NAME.get(ai_str)
-        if db_name is None:
+        enum_val = AI_STRING_TO_SUB_CATEGORY.get(ai_sub_category.lower().strip())
+        if enum_val is None:
             logger.warning("CategoryResolver: unknown AI sub_category %r", ai_sub_category)
             return None
-        result = self._name_to_id.get(db_name.lower())
-        if result is None:
-            logger.warning("CategoryResolver: DB missing sub_category %r", db_name)
-        return result
+        return int(enum_val)
 
     def resolve_all(self, ai_sub_categories: list[str] | None) -> list[int]:
-        """Resolve a multi-label list of AI sub_category strings to DB IDs.
+        """Resolve a multi-label list of AI strings to sub_category DB IDs (deduplicated).
 
-        Used for the new sub_category_ids JSONB column in filter_articles.
-        Silently drops any strings that cannot be resolved.
+        Used for filtered_articles.sub_category_ids JSONB column.
 
-        Example:
-          resolve_all(["murder", "terrorism"]) → [1, 3]
-          resolve_all(["unknown_type"])        → []
+        Example: resolve_all(["murder", "terrorism"]) → [1, 3]
         """
         if not ai_sub_categories:
             return []
-        result = []
+        result: list[int] = []
         seen: set[int] = set()
         for s in ai_sub_categories:
-            resolved_id = self.resolve(s)
-            if resolved_id is not None and resolved_id not in seen:
-                result.append(resolved_id)
-                seen.add(resolved_id)
+            sc_id = self.resolve(s)
+            if sc_id is not None and sc_id not in seen:
+                result.append(sc_id)
+                seen.add(sc_id)
+        return result
+
+    def resolve_categories_from_ids(self, sub_cat_ids: list[int] | None) -> list[int]:
+        """Map sub_category DB IDs → parent category DB IDs (deduplicated).
+
+        Used for filtered_articles.category_ids JSONB column.
+
+        Example:
+          [1, 2]  (Murder + Violence, both Violent Crime) → [1]
+          [1, 4]  (Murder + Fraud) → [1, 3]  (Violent Crime + Financial Crime)
+        """
+        if not sub_cat_ids:
+            return []
+        result: list[int] = []
+        seen: set[int] = set()
+        for sc_id in sub_cat_ids:
+            try:
+                cat_id = int(SUB_CATEGORY_TO_CATEGORY[SubCategoryEnum(sc_id)])
+            except (ValueError, KeyError):
+                logger.warning("CategoryResolver: unknown sub_category_id %d", sc_id)
+                continue
+            if cat_id not in seen:
+                result.append(cat_id)
+                seen.add(cat_id)
         return result
 
 
@@ -274,26 +292,20 @@ class LocationResolver:
 async def load_resolvers(
     db: AsyncSession,
 ) -> tuple[CategoryResolver, LocationResolver]:
-    """Load both resolvers in two DB queries. Call once at ingest start.
+    """Load both resolvers. CategoryResolver needs no DB query (uses enums).
+    LocationResolver loads state names from DB (36 states — not hardcoded).
 
     Returns:
         (CategoryResolver, LocationResolver) — both ready to use synchronously.
     """
-    # Load sub_category lookup: {name_lower: id}
-    sc_rows = await db.execute(
-        text("SELECT id, name FROM master_sub_category WHERE is_active = true")
-    )
-    name_to_id = {row.name.lower(): row.id for row in sc_rows.all()}
-
-    # Load state lookup: {name_lower: id}
+    # State lookup only — sub_category lookup is now enum-based (no DB query)
     state_rows = await db.execute(
         text("SELECT id, name FROM state")
     )
     state_name_to_id = {row.name.lower(): row.id for row in state_rows.all()}
 
     logger.debug(
-        "Resolvers loaded: %d sub_categories, %d states",
-        len(name_to_id),
+        "Resolvers loaded: sub_categories=enum-based, states=%d",
         len(state_name_to_id),
     )
-    return CategoryResolver(name_to_id), LocationResolver(state_name_to_id)
+    return CategoryResolver(), LocationResolver(state_name_to_id)

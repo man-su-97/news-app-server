@@ -72,7 +72,7 @@ class AnthropicProvider(AIProvider):
         try:
             response = await self._client.messages.create(
                 model=self._model,
-                max_tokens=768,                         # Enough for complete JSON output
+                max_tokens=1500,                        # Matches openai_prov headroom for long articles
                 system=COMBINED_PROCESS_PROMPT,         # Anthropic's native system param
                 messages=[{"role": "user", "content": user_message}],
             )

@@ -1,0 +1,1764 @@
+<!DOCTYPE html><html><head>
+      <title>ARCHITECTURE</title>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      
+      <link rel="stylesheet" href="file:////home/suman15135/.vscode/extensions/shd101wyy.markdown-preview-enhanced-0.8.20/crossnote/dependencies/katex/katex.min.css">
+      
+      
+      
+      
+      
+      <style>
+      code[class*=language-],pre[class*=language-]{color:#333;background:0 0;font-family:Consolas,"Liberation Mono",Menlo,Courier,monospace;text-align:left;white-space:pre;word-spacing:normal;word-break:normal;word-wrap:normal;line-height:1.4;-moz-tab-size:8;-o-tab-size:8;tab-size:8;-webkit-hyphens:none;-moz-hyphens:none;-ms-hyphens:none;hyphens:none}pre[class*=language-]{padding:.8em;overflow:auto;border-radius:3px;background:#f5f5f5}:not(pre)>code[class*=language-]{padding:.1em;border-radius:.3em;white-space:normal;background:#f5f5f5}.token.blockquote,.token.comment{color:#969896}.token.cdata{color:#183691}.token.doctype,.token.macro.property,.token.punctuation,.token.variable{color:#333}.token.builtin,.token.important,.token.keyword,.token.operator,.token.rule{color:#a71d5d}.token.attr-value,.token.regex,.token.string,.token.url{color:#183691}.token.atrule,.token.boolean,.token.code,.token.command,.token.constant,.token.entity,.token.number,.token.property,.token.symbol{color:#0086b3}.token.prolog,.token.selector,.token.tag{color:#63a35c}.token.attr-name,.token.class,.token.class-name,.token.function,.token.id,.token.namespace,.token.pseudo-class,.token.pseudo-element,.token.url-reference .token.variable{color:#795da3}.token.entity{cursor:help}.token.title,.token.title .token.punctuation{font-weight:700;color:#1d3e81}.token.list{color:#ed6a43}.token.inserted{background-color:#eaffea;color:#55a532}.token.deleted{background-color:#ffecec;color:#bd2c00}.token.bold{font-weight:700}.token.italic{font-style:italic}.language-json .token.property{color:#183691}.language-markup .token.tag .token.punctuation{color:#333}.language-css .token.function,code.language-css{color:#0086b3}.language-yaml .token.atrule{color:#63a35c}code.language-yaml{color:#183691}.language-ruby .token.function{color:#333}.language-markdown .token.url{color:#795da3}.language-makefile .token.symbol{color:#795da3}.language-makefile .token.variable{color:#183691}.language-makefile .token.builtin{color:#0086b3}.language-bash .token.keyword{color:#0086b3}pre[data-line]{position:relative;padding:1em 0 1em 3em}pre[data-line] .line-highlight-wrapper{position:absolute;top:0;left:0;background-color:transparent;display:block;width:100%}pre[data-line] .line-highlight{position:absolute;left:0;right:0;padding:inherit 0;margin-top:1em;background:hsla(24,20%,50%,.08);background:linear-gradient(to right,hsla(24,20%,50%,.1) 70%,hsla(24,20%,50%,0));pointer-events:none;line-height:inherit;white-space:pre}pre[data-line] .line-highlight:before,pre[data-line] .line-highlight[data-end]:after{content:attr(data-start);position:absolute;top:.4em;left:.6em;min-width:1em;padding:0 .5em;background-color:hsla(24,20%,50%,.4);color:#f4f1ef;font:bold 65%/1.5 sans-serif;text-align:center;vertical-align:.3em;border-radius:999px;text-shadow:none;box-shadow:0 1px #fff}pre[data-line] .line-highlight[data-end]:after{content:attr(data-end);top:auto;bottom:.4em}html body{font-family:'Helvetica Neue',Helvetica,'Segoe UI',Arial,freesans,sans-serif;font-size:16px;line-height:1.6;color:#333;background-color:#fff;overflow:initial;box-sizing:border-box;word-wrap:break-word}html body>:first-child{margin-top:0}html body h1,html body h2,html body h3,html body h4,html body h5,html body h6{line-height:1.2;margin-top:1em;margin-bottom:16px;color:#000}html body h1{font-size:2.25em;font-weight:300;padding-bottom:.3em}html body h2{font-size:1.75em;font-weight:400;padding-bottom:.3em}html body h3{font-size:1.5em;font-weight:500}html body h4{font-size:1.25em;font-weight:600}html body h5{font-size:1.1em;font-weight:600}html body h6{font-size:1em;font-weight:600}html body h1,html body h2,html body h3,html body h4,html body h5{font-weight:600}html body h5{font-size:1em}html body h6{color:#5c5c5c}html body strong{color:#000}html body del{color:#5c5c5c}html body a:not([href]){color:inherit;text-decoration:none}html body a{color:#08c;text-decoration:none}html body a:hover{color:#00a3f5;text-decoration:none}html body img{max-width:100%}html body>p{margin-top:0;margin-bottom:16px;word-wrap:break-word}html body>ol,html body>ul{margin-bottom:16px}html body ol,html body ul{padding-left:2em}html body ol.no-list,html body ul.no-list{padding:0;list-style-type:none}html body ol ol,html body ol ul,html body ul ol,html body ul ul{margin-top:0;margin-bottom:0}html body li{margin-bottom:0}html body li.task-list-item{list-style:none}html body li>p{margin-top:0;margin-bottom:0}html body .task-list-item-checkbox{margin:0 .2em .25em -1.8em;vertical-align:middle}html body .task-list-item-checkbox:hover{cursor:pointer}html body blockquote{margin:16px 0;font-size:inherit;padding:0 15px;color:#5c5c5c;background-color:#f0f0f0;border-left:4px solid #d6d6d6}html body blockquote>:first-child{margin-top:0}html body blockquote>:last-child{margin-bottom:0}html body hr{height:4px;margin:32px 0;background-color:#d6d6d6;border:0 none}html body table{margin:10px 0 15px 0;border-collapse:collapse;border-spacing:0;display:block;width:100%;overflow:auto;word-break:normal;word-break:keep-all}html body table th{font-weight:700;color:#000}html body table td,html body table th{border:1px solid #d6d6d6;padding:6px 13px}html body dl{padding:0}html body dl dt{padding:0;margin-top:16px;font-size:1em;font-style:italic;font-weight:700}html body dl dd{padding:0 16px;margin-bottom:16px}html body code{font-family:Menlo,Monaco,Consolas,'Courier New',monospace;font-size:.85em;color:#000;background-color:#f0f0f0;border-radius:3px;padding:.2em 0}html body code::after,html body code::before{letter-spacing:-.2em;content:'\00a0'}html body pre>code{padding:0;margin:0;word-break:normal;white-space:pre;background:0 0;border:0}html body .highlight{margin-bottom:16px}html body .highlight pre,html body pre{padding:1em;overflow:auto;line-height:1.45;border:#d6d6d6;border-radius:3px}html body .highlight pre{margin-bottom:0;word-break:normal}html body pre code,html body pre tt{display:inline;max-width:initial;padding:0;margin:0;overflow:initial;line-height:inherit;word-wrap:normal;background-color:transparent;border:0}html body pre code:after,html body pre code:before,html body pre tt:after,html body pre tt:before{content:normal}html body blockquote,html body dl,html body ol,html body p,html body pre,html body ul{margin-top:0;margin-bottom:16px}html body kbd{color:#000;border:1px solid #d6d6d6;border-bottom:2px solid #c7c7c7;padding:2px 4px;background-color:#f0f0f0;border-radius:3px}@media print{html body{background-color:#fff}html body h1,html body h2,html body h3,html body h4,html body h5,html body h6{color:#000;page-break-after:avoid}html body blockquote{color:#5c5c5c}html body pre{page-break-inside:avoid}html body table{display:table}html body img{display:block;max-width:100%;max-height:100%}html body code,html body pre{word-wrap:break-word;white-space:pre}}.markdown-preview{width:100%;height:100%;box-sizing:border-box}.markdown-preview ul{list-style:disc}.markdown-preview ul ul{list-style:circle}.markdown-preview ul ul ul{list-style:square}.markdown-preview ol{list-style:decimal}.markdown-preview ol ol,.markdown-preview ul ol{list-style-type:lower-roman}.markdown-preview ol ol ol,.markdown-preview ol ul ol,.markdown-preview ul ol ol,.markdown-preview ul ul ol{list-style-type:lower-alpha}.markdown-preview .newpage,.markdown-preview .pagebreak{page-break-before:always}.markdown-preview pre.line-numbers{position:relative;padding-left:3.8em;counter-reset:linenumber}.markdown-preview pre.line-numbers>code{position:relative}.markdown-preview pre.line-numbers .line-numbers-rows{position:absolute;pointer-events:none;top:1em;font-size:100%;left:0;width:3em;letter-spacing:-1px;border-right:1px solid #999;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}.markdown-preview pre.line-numbers .line-numbers-rows>span{pointer-events:none;display:block;counter-increment:linenumber}.markdown-preview pre.line-numbers .line-numbers-rows>span:before{content:counter(linenumber);color:#999;display:block;padding-right:.8em;text-align:right}.markdown-preview .mathjax-exps .MathJax_Display{text-align:center!important}.markdown-preview:not([data-for=preview]) .code-chunk .code-chunk-btn-group{display:none}.markdown-preview:not([data-for=preview]) .code-chunk .status{display:none}.markdown-preview:not([data-for=preview]) .code-chunk .output-div{margin-bottom:16px}.markdown-preview .md-toc{padding:0}.markdown-preview .md-toc .md-toc-link-wrapper .md-toc-link{display:inline;padding:.25rem 0}.markdown-preview .md-toc .md-toc-link-wrapper .md-toc-link div,.markdown-preview .md-toc .md-toc-link-wrapper .md-toc-link p{display:inline}.markdown-preview .md-toc .md-toc-link-wrapper.highlighted .md-toc-link{font-weight:800}.scrollbar-style::-webkit-scrollbar{width:8px}.scrollbar-style::-webkit-scrollbar-track{border-radius:10px;background-color:transparent}.scrollbar-style::-webkit-scrollbar-thumb{border-radius:5px;background-color:rgba(150,150,150,.66);border:4px solid rgba(150,150,150,.66);background-clip:content-box}html body[for=html-export]:not([data-presentation-mode]){position:relative;width:100%;height:100%;top:0;left:0;margin:0;padding:0;overflow:auto}html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{position:relative;top:0;min-height:100vh}@media screen and (min-width:914px){html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{padding:2em calc(50% - 457px + 2em)}}@media screen and (max-width:914px){html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{padding:2em}}@media screen and (max-width:450px){html body[for=html-export]:not([data-presentation-mode]) .markdown-preview{font-size:14px!important;padding:1em}}@media print{html body[for=html-export]:not([data-presentation-mode]) #sidebar-toc-btn{display:none}}html body[for=html-export]:not([data-presentation-mode]) #sidebar-toc-btn{position:fixed;bottom:8px;left:8px;font-size:28px;cursor:pointer;color:inherit;z-index:99;width:32px;text-align:center;opacity:.4}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] #sidebar-toc-btn{opacity:1}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc{position:fixed;top:0;left:0;width:300px;height:100%;padding:32px 0 48px 0;font-size:14px;box-shadow:0 0 4px rgba(150,150,150,.33);box-sizing:border-box;overflow:auto;background-color:inherit}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc::-webkit-scrollbar{width:8px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc::-webkit-scrollbar-track{border-radius:10px;background-color:transparent}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc::-webkit-scrollbar-thumb{border-radius:5px;background-color:rgba(150,150,150,.66);border:4px solid rgba(150,150,150,.66);background-clip:content-box}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc a{text-decoration:none}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc{padding:0 16px}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper .md-toc-link{display:inline;padding:.25rem 0}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper .md-toc-link div,html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper .md-toc-link p{display:inline}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .md-sidebar-toc .md-toc .md-toc-link-wrapper.highlighted .md-toc-link{font-weight:800}html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .markdown-preview{left:300px;width:calc(100% - 300px);padding:2em calc(50% - 457px - 300px / 2);margin:0;box-sizing:border-box}@media screen and (max-width:1274px){html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .markdown-preview{padding:2em}}@media screen and (max-width:450px){html body[for=html-export]:not([data-presentation-mode])[html-show-sidebar-toc] .markdown-preview{width:100%}}html body[for=html-export]:not([data-presentation-mode]):not([html-show-sidebar-toc]) .markdown-preview{left:50%;transform:translateX(-50%)}html body[for=html-export]:not([data-presentation-mode]):not([html-show-sidebar-toc]) .md-sidebar-toc{display:none}
+/* Please visit the URL below for more information: */
+/*   https://shd101wyy.github.io/markdown-preview-enhanced/#/customize-css */
+
+      </style>
+      <!-- The content below will be included at the end of the <head> element. --><script type="text/javascript">
+  document.addEventListener("DOMContentLoaded", function () {
+    // your code here
+  });
+</script></head><body for="html-export">
+    
+    
+      <div class="crossnote markdown-preview  ">
+      
+<h1 id="crime-news-aggregator-backend--architecture-reference">Crime News Aggregator Backend — Architecture Reference </h1>
+<p>This document is the single source of truth for anyone reading or extending this codebase.<br>
+It covers every file, every layer, the full data flow, and the database schema.</p>
+<hr>
+<h2 id="table-of-contents">Table of Contents </h2>
+<ol>
+<li><a href="#1-project-purpose">Project Purpose</a></li>
+<li><a href="#2-tech-stack">Tech Stack</a></li>
+<li><a href="#3-directory-structure">Directory Structure</a></li>
+<li><a href="#4-architectural-philosophy">Architectural Philosophy</a></li>
+<li><a href="#5-layer-by-layer-breakdown">Layer-by-Layer Breakdown</a>
+<ul>
+<li><a href="#51-entry-point--appmainpy">Entry Point</a></li>
+<li><a href="#52-core-layer--appcore">Core</a></li>
+<li><a href="#53-models-layer--appmodels">Models</a></li>
+<li><a href="#54-repository-layer--apprepositories">Repositories</a></li>
+<li><a href="#55-schema-layer--appschemas">Schemas</a></li>
+<li><a href="#56-service-layer--appservices">Services</a></li>
+<li><a href="#57-api-layer--appapi">API Routes</a></li>
+<li><a href="#58-migrations">Migrations</a></li>
+</ul>
+</li>
+<li><a href="#6-full-data-flow">Full Data Flow</a></li>
+<li><a href="#7-database-schema">Database Schema</a></li>
+<li><a href="#8-ai-pipeline-deep-dive">AI Pipeline Deep Dive</a></li>
+<li><a href="#9-background-scheduler">Background Scheduler</a></li>
+<li><a href="#10-configuration-reference">Configuration Reference</a></li>
+<li><a href="#11-development-commands">Development Commands</a></li>
+</ol>
+<hr>
+<h2 id="1-project-purpose">1. Project Purpose </h2>
+<p>An automated backend that:</p>
+<ul>
+<li>Pulls crime news articles from <strong>RSS feeds</strong> and <strong>REST APIs</strong> on a 5-minute schedule</li>
+<li>Runs every article through a <strong>two-stage AI pipeline</strong>:
+<ul>
+<li><strong>Stage 1 — Filter</strong>: classifies crime type, extracts structured fields, resolves location</li>
+<li><strong>Stage 2 — Post-process</strong>: rewrites title/description in original language, scores importance 1–100, discovers reference URLs via web search</li>
+</ul>
+</li>
+<li>Ranks and publishes the <strong>top N articles</strong> into a curated feed using importance score × time-decay</li>
+<li>Exposes a clean <strong>REST API</strong> for a frontend to consume</li>
+</ul>
+<hr>
+<h2 id="2-tech-stack">2. Tech Stack </h2>
+<table>
+<thead>
+<tr>
+<th>Library</th>
+<th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>FastAPI</strong></td>
+<td>Web framework — async, automatic OpenAPI/Swagger docs, Pydantic DI</td>
+</tr>
+<tr>
+<td><strong>SQLAlchemy 2.0</strong></td>
+<td>Async ORM — typed <code>Mapped[]</code> columns, JSONB support, Alembic integration</td>
+</tr>
+<tr>
+<td><strong>asyncpg</strong></td>
+<td>Async PostgreSQL driver (required by SQLAlchemy async engine)</td>
+</tr>
+<tr>
+<td><strong>Pydantic v2</strong></td>
+<td>Request/response validation and serialisation</td>
+</tr>
+<tr>
+<td><strong>pydantic-settings</strong></td>
+<td><code>.env</code> loading with type validation — fails loudly on missing vars</td>
+</tr>
+<tr>
+<td><strong>APScheduler</strong></td>
+<td><code>AsyncIOScheduler</code> — runs ingestion + publishing jobs every 5 minutes</td>
+</tr>
+<tr>
+<td><strong>feedparser</strong></td>
+<td>Parses RSS/Atom feeds, handles malformed XML gracefully</td>
+</tr>
+<tr>
+<td><strong>httpx</strong></td>
+<td>Async HTTP client for REST source fetching</td>
+</tr>
+<tr>
+<td><strong>anthropic</strong></td>
+<td>Official Anthropic SDK for Claude models</td>
+</tr>
+<tr>
+<td><strong>openai</strong></td>
+<td>OpenAI Python SDK — used for GPT and Gemini OpenAI-compatible endpoints</td>
+</tr>
+<tr>
+<td><strong>langchain / langgraph</strong></td>
+<td>LangGraph agent graph for Gemini providers; structured output, tool use</td>
+</tr>
+<tr>
+<td><strong>langchain-google-genai</strong></td>
+<td>Gemini model integration for LangChain</td>
+</tr>
+<tr>
+<td><strong>langchain-community</strong></td>
+<td><code>DuckDuckGoSearchResults</code> tool for Stage 2 web search</td>
+</tr>
+<tr>
+<td><strong>Alembic</strong></td>
+<td>Schema migrations — versioned, async-aware</td>
+</tr>
+<tr>
+<td><strong>uvicorn</strong></td>
+<td>ASGI server to run FastAPI</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="3-directory-structure">3. Directory Structure </h2>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>news_app_backend/
+│
+├── .env                                    # DATABASE_URL, GEMINI_API_KEY, etc.
+├── alembic.ini                             # Alembic config (URL injected at runtime)
+├── pyproject.toml                          # Dependencies
+├── ARCHITECTURE.md                         # This document
+│
+├── migrations/
+│   ├── env.py                              # Async-aware Alembic runner
+│   ├── script.py.mako                      # Template for new migration files
+│   └── versions/
+│       ├── 29df1b34_initial_schema.py
+│       ├── c8f2a1e3_add_raw_ingestion_events.py
+│       ├── d9e4f5a6_add_ai_provider_configs.py
+│       ├── e1f2a3b4_add_enrichment_fields.py
+│       ├── f2g3h4i5_add_article_card_fields.py
+│       ├── g3h4i5j6_widen_normalized_by.py
+│       ├── h4i5j6k7_pipeline_schema_redesign.py
+│       ├── i5j6k7l8_seed_master_data.py
+│       ├── j6k7l8m9_pipeline_enhancements.py
+│       ├── k7l8m9n0_filtered_articles_cleanup.py
+│       └── l8m9n0o1_performance_indexes.py  ← HEAD
+│
+└── app/
+    ├── main.py                             # FastAPI app, middleware, router registration
+    │
+    ├── core/
+    │   ├── config.py                       # All settings via pydantic-settings
+    │   ├── database.py                     # Async engine + session factory
+    │   ├── deps.py                         # FastAPI Depends factory functions
+    │   └── enums.py                        # CategoryEnum, SubCategoryEnum (static lookups)
+    │
+    ├── models/                             # SQLAlchemy ORM table definitions
+    │   ├── __init__.py                     # Imports all models (registers them with Base)
+    │   ├── base.py                         # Shared DeclarativeBase
+    │   ├── source.py                       # news_sources table
+    │   ├── raw_event.py                    # raw_ingestion table
+    │   ├── ai_provider.py                  # ai_provider_configs table
+    │   ├── category.py                     # master_category + master_sub_category tables
+    │   ├── location.py                     # country + state tables
+    │   ├── filter_article.py               # filtered_articles table (Stage 1 output)
+    │   ├── post_processed_article.py       # post_processed_articles table (Stage 2 output)
+    │   └── final_article.py                # final_articles table (ranked public feed)
+    │
+    ├── repositories/                       # All DB access — no business logic
+    │   ├── source_repo.py                  # CRUD for news_sources
+    │   ├── raw_ingestion_repo.py           # store_batch, mark_filtered/failed
+    │   ├── ai_provider_repo.py             # CRUD + activate for ai_provider_configs
+    │   ├── master_data_repo.py             # Read-only: categories, sub-categories, states
+    │   ├── filter_article_repo.py          # insert_batch + reads for filtered_articles
+    │   ├── post_processed_article_repo.py  # insert_batch + reads for post_processed_articles
+    │   ├── article_repo.py                 # Alias: ArticleRepository = PostProcessedArticleRepository
+    │   └── final_article_repo.py           # upsert_batch + ranked feed reads
+    │
+    ├── schemas/                            # Pydantic request/response contracts
+    │   ├── source_schema.py                # SourceCreate, SourceUpdate, SourceResponse
+    │   ├── ai_provider_schema.py           # AIProviderCreate, AIProviderResponse
+    │   ├── article_schema.py               # PostProcessedArticleResponse (+ alias)
+    │   ├── final_article_schema.py         # FinalArticleResponse, FinalArticleListResponse
+    │   └── master_data_schema.py           # Category, SubCategory, State responses
+    │
+    ├── services/
+    │   ├── scheduler.py                    # APScheduler: ingestion every 5min, publish every 5min
+    │   ├── ingestion_service.py            # Orchestrates the full two-stage pipeline
+    │   ├── publishing_service.py           # Ranks articles and writes final_articles feed
+    │   ├── source_normalizer.py            # Coerces raw feedparser/REST dicts to plain Python
+    │   ├── fetchers/
+    │   │   ├── rss_fetcher.py              # feedparser-based RSS/Atom fetcher
+    │   │   └── rest_fetcher.py             # httpx-based REST API fetcher
+    │   └── normalization/
+    │       ├── ai_processor.py             # Resolves which AI provider to use (DB → env fallback)
+    │       ├── provider_factory.py         # Instantiates + caches provider objects
+    │       ├── resolvers.py                # CategoryResolver (enum), LocationResolver (DB)
+    │       ├── canonical_validator.py      # Post-parse field validation helpers
+    │       └── providers/
+    │           ├── base.py                 # AIProvider ABC + prompts + Pydantic output models
+    │           ├── openai_prov.py          # OpenAI-compatible provider (GPT, Gemini REST, custom)
+    │           ├── anthropic_prov.py       # Anthropic Claude provider
+    │           ├── gemini_langgraph_prov.py     # Gemini + LangGraph agent
+    │           └── gemini_multimodal_prov.py    # Gemini multimodal + LangGraph (recommended)
+    │
+    └── api/                                # HTTP route handlers — thin controllers only
+        ├── routes_final_articles.py        # GET /final-articles/ (public feed)
+        ├── routes_master_data.py           # GET /master/categories|sub-categories|states
+        ├── routes_sources.py               # CRUD /sources/
+        ├── routes_ingest.py                # POST /ingest/
+        └── routes_ai_providers.py          # CRUD + activate /ai-providers/
+</code></pre><hr>
+<h2 id="4-architectural-philosophy">4. Architectural Philosophy </h2>
+<p>The codebase follows a strict <strong>layered architecture</strong> — each layer has one responsibility<br>
+and may only call the layer directly below it.</p>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>HTTP Request
+     │
+     ▼
+ [API Layer]           ← validates input, calls service/repo, returns schema
+     │
+     ▼
+ [Service Layer]       ← business logic, pipeline orchestration, error handling
+     │
+     ▼
+ [Repository Layer]    ← database access only — no business logic
+     │
+     ▼
+ [Model Layer]         ← table definitions only — no methods, no logic
+     │
+     ▼
+  [PostgreSQL]
+</code></pre><p><strong>Enforced rules:</strong></p>
+<ul>
+<li>Routes never touch <code>AsyncSession</code> directly — they receive injected repos/services via <code>Depends</code></li>
+<li>Repositories never call services — data flows downward only</li>
+<li>Pydantic schemas never appear inside ORM models</li>
+<li>Business logic never appears inside schemas or models</li>
+<li>External HTTP / AI API calls happen only inside <code>services/</code></li>
+</ul>
+<hr>
+<h2 id="5-layer-by-layer-breakdown">5. Layer-by-Layer Breakdown </h2>
+<h3 id="51-entry-point--appmainpy">5.1 Entry Point — <code>app/main.py</code> </h3>
+<p>Creates the FastAPI app, attaches middleware, and registers all routers.</p>
+<p><strong>Responsibilities:</strong></p>
+<ul>
+<li>Creates <code>FastAPI(title="Crime News API", version="1.0.0")</code> with a <code>lifespan</code> hook</li>
+<li><code>lifespan</code> startup: calls <code>start_scheduler()</code> — kicks off the background jobs</li>
+<li><code>lifespan</code> shutdown: calls <code>stop_scheduler()</code> — drains running jobs gracefully</li>
+<li>Attaches <code>CORSMiddleware</code> with <code>allow_origins=["*"]</code> (restrict to your domain in production)</li>
+<li>Configures <code>logging.basicConfig</code> at <code>INFO</code> level</li>
+<li>Registers 5 routers with prefixes and Swagger tags</li>
+<li><code>/health</code> and <code>/</code> are hidden from the OpenAPI schema (<code>include_in_schema=False</code>)</li>
+</ul>
+<hr>
+<h3 id="52-core-layer--appcore">5.2 Core Layer — <code>app/core/</code> </h3>
+<p>Infrastructure with no domain knowledge.</p>
+<hr>
+<h4 id="configpy"><code>config.py</code> </h4>
+<p>All environment variables in one typed object, loaded once at startup.</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-class">class</span> <span class="token class-name">Settings</span><span class="token punctuation">(</span>BaseSettings<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    DATABASE_URL<span class="token punctuation">:</span> <span class="token builtin">str</span>               <span class="token comment"># required — app refuses to start if missing</span>
+    DEBUG<span class="token punctuation">:</span> <span class="token builtin">bool</span> <span class="token operator">=</span> <span class="token boolean">False</span>
+    GEMINI_API_KEY<span class="token punctuation">:</span> <span class="token builtin">str</span> <span class="token operator">|</span> <span class="token boolean">None</span> <span class="token operator">=</span> <span class="token boolean">None</span>
+    ANTHROPIC_API_KEY<span class="token punctuation">:</span> <span class="token builtin">str</span> <span class="token operator">|</span> <span class="token boolean">None</span> <span class="token operator">=</span> <span class="token boolean">None</span>
+    AI_REQUESTS_PER_MINUTE<span class="token punctuation">:</span> <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">5</span>    <span class="token comment"># rate limiter for free-tier safety</span>
+    AI_RETRY_ATTEMPTS<span class="token punctuation">:</span> <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">3</span>
+    AI_RETRY_DELAY_SECONDS<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">15.0</span>
+    INGEST_INTERVAL_MINUTES<span class="token punctuation">:</span> <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">5</span>
+    PUBLISH_INTERVAL_MINUTES<span class="token punctuation">:</span> <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">5</span>
+    PUBLISH_OFFSET_SECONDS<span class="token punctuation">:</span> <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">30</span>   <span class="token comment"># delay publish job after ingest</span>
+    FEED_TOP_N<span class="token punctuation">:</span> <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">20</span>
+    DUCKDUCKGO_TIMEOUT_SECONDS<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">10.0</span>
+    DECAY_FRESH<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">1.00</span>          <span class="token comment"># &lt; 6h</span>
+    DECAY_RECENT<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">0.75</span>         <span class="token comment"># 6–24h</span>
+    DECAY_DAY<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">0.50</span>            <span class="token comment"># 1–3d</span>
+    DECAY_WEEK<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">0.25</span>           <span class="token comment"># 3–7d</span>
+    DECAY_OLD<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">0.10</span>            <span class="token comment"># &gt; 7d</span>
+</code></pre><p>All other files import the singleton <code>settings = Settings()</code>. Nothing else calls <code>os.getenv</code>.</p>
+<hr>
+<h4 id="databasepy"><code>database.py</code> </h4>
+<p>Async SQLAlchemy engine and <code>get_db</code> session dependency.</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code>engine <span class="token operator">=</span> create_async_engine<span class="token punctuation">(</span>settings<span class="token punctuation">.</span>DATABASE_URL<span class="token punctuation">,</span> echo<span class="token operator">=</span>settings<span class="token punctuation">.</span>DEBUG<span class="token punctuation">,</span> pool_size<span class="token operator">=</span><span class="token number">10</span><span class="token punctuation">,</span> max_overflow<span class="token operator">=</span><span class="token number">20</span><span class="token punctuation">)</span>
+AsyncSessionLocal <span class="token operator">=</span> async_sessionmaker<span class="token punctuation">(</span>engine<span class="token punctuation">,</span> expire_on_commit<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+
+<span class="token keyword keyword-async">async</span> <span class="token keyword keyword-def">def</span> <span class="token function">get_db</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> AsyncGenerator<span class="token punctuation">[</span>AsyncSession<span class="token punctuation">,</span> <span class="token boolean">None</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+    <span class="token keyword keyword-async">async</span> <span class="token keyword keyword-with">with</span> AsyncSessionLocal<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword keyword-as">as</span> session<span class="token punctuation">:</span>
+        <span class="token keyword keyword-yield">yield</span> session
+</code></pre><p><code>expire_on_commit=False</code> prevents "lazy load after commit" errors when route handlers access ORM attributes after a <code>commit()</code>.</p>
+<hr>
+<h4 id="depspy"><code>deps.py</code> </h4>
+<p>FastAPI <code>Depends</code> factories — the only place repositories and services are instantiated for routes.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Returns</th>
+<th>Used by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_source_repo</code></td>
+<td><code>SourceRepository</code></td>
+<td>sources routes</td>
+</tr>
+<tr>
+<td><code>get_post_processed_repo</code></td>
+<td><code>PostProcessedArticleRepository</code></td>
+<td>final-articles publish</td>
+</tr>
+<tr>
+<td><code>get_ai_provider_repo</code></td>
+<td><code>AIProviderRepository</code></td>
+<td>ai-providers routes</td>
+</tr>
+<tr>
+<td><code>get_final_article_repo</code></td>
+<td><code>FinalArticleRepository</code></td>
+<td>final-articles routes</td>
+</tr>
+<tr>
+<td><code>get_category_repo</code></td>
+<td><code>MasterCategoryRepository</code></td>
+<td>master-data routes</td>
+</tr>
+<tr>
+<td><code>get_sub_category_repo</code></td>
+<td><code>MasterSubCategoryRepository</code></td>
+<td>master-data routes</td>
+</tr>
+<tr>
+<td><code>get_state_repo</code></td>
+<td><code>StateRepository</code></td>
+<td>master-data routes</td>
+</tr>
+<tr>
+<td><code>get_ingestion_service</code></td>
+<td><code>IngestionService</code></td>
+<td>ingest route</td>
+</tr>
+</tbody>
+</table>
+<p><code>get_ingestion_service</code> wires all five repos (<code>source</code>, <code>raw</code>, <code>filter_article</code>, <code>post_processed</code>, <code>ai_provider</code>) plus the raw <code>db</code> session (needed by <code>CategoryResolver</code> / <code>LocationResolver</code>).</p>
+<hr>
+<h4 id="enumspy"><code>enums.py</code> </h4>
+<p>Static <code>IntEnum</code> definitions for crime taxonomy — <strong>zero DB queries</strong> at classification time.</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-class">class</span> <span class="token class-name">CategoryEnum</span><span class="token punctuation">(</span>IntEnum<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    VIOLENT_CRIME <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>  TERRORISM <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>  FINANCIAL_CRIME <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>  CYBER_CRIME <span class="token operator">=</span> <span class="token number">4</span>
+    DRUG_CRIME <span class="token operator">=</span> <span class="token number">5</span><span class="token punctuation">;</span>     PROPERTY_CRIME <span class="token operator">=</span> <span class="token number">6</span><span class="token punctuation">;</span>  SEXUAL_CRIME <span class="token operator">=</span> <span class="token number">7</span><span class="token punctuation">;</span>  OTHER <span class="token operator">=</span> <span class="token number">8</span>
+
+<span class="token keyword keyword-class">class</span> <span class="token class-name">SubCategoryEnum</span><span class="token punctuation">(</span>IntEnum<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    MURDER <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>  VIOLENCE <span class="token operator">=</span> <span class="token number">2</span><span class="token punctuation">;</span>  TERRORISM <span class="token operator">=</span> <span class="token number">3</span><span class="token punctuation">;</span>  FRAUD <span class="token operator">=</span> <span class="token number">4</span><span class="token punctuation">;</span>  CORRUPTION <span class="token operator">=</span> <span class="token number">5</span>
+    CYBERCRIME <span class="token operator">=</span> <span class="token number">6</span><span class="token punctuation">;</span>  DRUG_TRAFFICKING <span class="token operator">=</span> <span class="token number">7</span><span class="token punctuation">;</span>  THEFT <span class="token operator">=</span> <span class="token number">8</span><span class="token punctuation">;</span>  HUMAN_TRAFFICKING <span class="token operator">=</span> <span class="token number">9</span><span class="token punctuation">;</span>  OTHER <span class="token operator">=</span> <span class="token number">10</span>
+</code></pre><p>Two lookup dicts are also defined here:</p>
+<ul>
+<li><code>AI_STRING_TO_SUB_CATEGORY: dict[str, SubCategoryEnum]</code> — maps AI output strings (<code>"murder"</code>, <code>"fraud"</code>, …) to enum IDs</li>
+<li><code>SUB_CATEGORY_TO_CATEGORY: dict[SubCategoryEnum, CategoryEnum]</code> — maps sub-category → parent category for deriving <code>category_ids</code></li>
+</ul>
+<p>IDs match the seed migration (<code>i5j6k7l8m901</code>) which uses <code>ON CONFLICT DO NOTHING</code>, so they are stable.</p>
+<hr>
+<h3 id="53-models-layer--appmodels">5.3 Models Layer — <code>app/models/</code> </h3>
+<p>SQLAlchemy ORM table definitions. <strong>No methods, no business logic, no imports from services or schemas.</strong></p>
+<p><code>app/models/__init__.py</code> imports every model in dependency order so that all <code>Table</code> objects are registered onto <code>Base.metadata</code> before any query or migration runs.</p>
+<hr>
+<h4 id="basepy"><code>base.py</code> </h4>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-class">class</span> <span class="token class-name">Base</span><span class="token punctuation">(</span>DeclarativeBase<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword keyword-pass">pass</span>
+</code></pre><p>All models inherit from this. Alembic's <code>env.py</code> imports <code>Base.metadata</code> to autogenerate migrations.</p>
+<hr>
+<h4 id="sourcepy--news_sources"><code>source.py</code> → <code>news_sources</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>VARCHAR</td>
+<td>Display label</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>VARCHAR</td>
+<td><code>"rss"</code> or <code>"rest"</code> — controls which fetcher is used</td>
+</tr>
+<tr>
+<td><code>url</code></td>
+<td>VARCHAR UNIQUE</td>
+<td>Dedup guard — prevents registering the same feed twice</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td>JSONB</td>
+<td>Per-source extras, e.g. <code>{"headers": {"Authorization": "Bearer …"}}</code></td>
+</tr>
+<tr>
+<td><code>is_active</code></td>
+<td>BOOLEAN</td>
+<td><code>false</code> = paused, skipped by scheduler</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td><code>server_default=NOW()</code></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="raw_eventpy--raw_ingestion"><code>raw_event.py</code> → <code>raw_ingestion</code> </h4>
+<p>The <strong>pipeline inbox</strong> — every item fetched from a source lands here first.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>source_id</code></td>
+<td>INTEGER FK → news_sources</td>
+<td>CASCADE delete</td>
+</tr>
+<tr>
+<td><code>content_hash</code></td>
+<td>VARCHAR(64) UNIQUE</td>
+<td>SHA-256 of <code>source_id + raw_payload</code> — deduplication key</td>
+</tr>
+<tr>
+<td><code>raw_payload</code></td>
+<td>JSONB</td>
+<td>Complete original data from the feed/API</td>
+</tr>
+<tr>
+<td><code>status</code></td>
+<td>VARCHAR</td>
+<td><code>pending</code> → <code>filtered</code> / <code>filtered_out</code> / <code>failed</code></td>
+</tr>
+<tr>
+<td><code>normalized_by</code></td>
+<td>VARCHAR(200)</td>
+<td>e.g. <code>"ai:gemini_langgraph:gemini-2.0-flash"</code> — audit trail</td>
+</tr>
+<tr>
+<td><code>error_message</code></td>
+<td>TEXT</td>
+<td>Populated on <code>failed</code> status</td>
+</tr>
+<tr>
+<td><code>retry_count</code></td>
+<td>INTEGER</td>
+<td>How many AI retry attempts were made</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+<tr>
+<td><code>processed_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td>When AI processing completed</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="ai_providerpy--ai_provider_configs"><code>ai_provider.py</code> → <code>ai_provider_configs</code> </h4>
+<p>Stores AI provider credentials — allows runtime provider switching without redeployment.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>name</code></td>
+<td>VARCHAR</td>
+<td>Friendly label</td>
+</tr>
+<tr>
+<td><code>provider</code></td>
+<td>VARCHAR</td>
+<td><code>anthropic</code>, <code>openai</code>, <code>gemini</code>, <code>gemini_langgraph</code>, <code>gemini_multimodal</code>, <code>custom</code></td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>VARCHAR</td>
+<td>e.g. <code>gemini-2.0-flash</code>, <code>claude-haiku-4-5-20251001</code></td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td>VARCHAR</td>
+<td>Stored encrypted at rest; never returned by any API endpoint</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td>VARCHAR</td>
+<td>Required for <code>gemini</code> and <code>custom</code>; null for <code>anthropic</code>/<code>openai</code></td>
+</tr>
+<tr>
+<td><code>is_active</code></td>
+<td>BOOLEAN</td>
+<td>Only one row may be <code>true</code> at a time (partial unique index)</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="categorypy--master_category--master_sub_category"><code>category.py</code> → <code>master_category</code> + <code>master_sub_category</code> </h4>
+<p>Reference tables seeded by migration <code>i5j6k7l8m901</code>. Rarely change after seeding.</p>
+<p><code>master_category</code>: id, name, description, priority_point, is_active, created_at<br>
+<code>master_sub_category</code>: id, category_id (FK), name, description, priority_point, is_active, created_at</p>
+<p>IDs are stable (matching <code>enums.py</code>) because the seed uses <code>ON CONFLICT DO NOTHING</code>.</p>
+<hr>
+<h4 id="locationpy--country--state"><code>location.py</code> → <code>country</code> + <code>state</code> </h4>
+<p><code>country</code>: id, name<br>
+<code>state</code>: id, country_id (FK), name</p>
+<p>Seeded with India + 36 states/UTs. <code>LocationResolver</code> loads the state table at the start of each ingest run to resolve AI-extracted location strings to a <code>state.id</code>.</p>
+<hr>
+<h4 id="filter_articlepy--filtered_articles"><code>filter_article.py</code> → <code>filtered_articles</code> </h4>
+<p><strong>Stage 1 AI output.</strong> One row per crime-relevant article.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>raw_ingestion_id</code></td>
+<td>INTEGER FK UNIQUE</td>
+<td>One-to-one with raw_ingestion</td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>VARCHAR</td>
+<td>Extracted verbatim from source</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>TEXT</td>
+<td>Body text extracted and HTML-cleaned</td>
+</tr>
+<tr>
+<td><code>image_url</code></td>
+<td>VARCHAR</td>
+<td></td>
+</tr>
+<tr>
+<td><code>main_url</code></td>
+<td>VARCHAR UNIQUE</td>
+<td>Canonical URL — upsert dedup key</td>
+</tr>
+<tr>
+<td><code>published_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+<tr>
+<td><code>sub_category_ids</code></td>
+<td>JSONB</td>
+<td>Multi-label array e.g. <code>[1, 3]</code> (Murder + Terrorism). GIN indexed.</td>
+</tr>
+<tr>
+<td><code>category_ids</code></td>
+<td>JSONB</td>
+<td>Parent category IDs derived from sub_category_ids. GIN indexed.</td>
+</tr>
+<tr>
+<td><code>location_state_id</code></td>
+<td>INTEGER FK → state</td>
+<td>Nullable</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="post_processed_articlepy--post_processed_articles"><code>post_processed_article.py</code> → <code>post_processed_articles</code> </h4>
+<p><strong>Stage 2 AI output.</strong> Rewritten, scored, reference-enriched version.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>filter_article_id</code></td>
+<td>INTEGER FK UNIQUE</td>
+<td>One-to-one with filtered_articles</td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>VARCHAR</td>
+<td>AI-rewritten headline</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>TEXT</td>
+<td>AI-rewritten ~100 word summary</td>
+</tr>
+<tr>
+<td><code>image_url</code></td>
+<td>VARCHAR</td>
+<td></td>
+</tr>
+<tr>
+<td><code>reference_urls</code></td>
+<td>TEXT[]</td>
+<td>Up to 5 related article URLs found via DuckDuckGo</td>
+</tr>
+<tr>
+<td><code>published_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+<tr>
+<td><code>sub_category_id</code></td>
+<td>INTEGER FK → master_sub_category</td>
+<td>Single best-match sub-category</td>
+</tr>
+<tr>
+<td><code>location_id</code></td>
+<td>INTEGER FK → state</td>
+<td></td>
+</tr>
+<tr>
+<td><code>imp_score</code></td>
+<td>INTEGER</td>
+<td>AI importance score 1–100. Partial B-tree index (NOT NULL rows only).</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="final_articlepy--final_articles"><code>final_article.py</code> → <code>final_articles</code> </h4>
+<p><strong>The public feed.</strong> Top N articles ranked by <code>rank_score</code>, refreshed every 5 minutes.</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>id</code></td>
+<td>INTEGER PK</td>
+<td></td>
+</tr>
+<tr>
+<td><code>post_processed_article_id</code></td>
+<td>INTEGER FK UNIQUE</td>
+<td></td>
+</tr>
+<tr>
+<td><code>title</code></td>
+<td>VARCHAR</td>
+<td>Denormalised from post_processed_articles at publish time</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>TEXT</td>
+<td></td>
+</tr>
+<tr>
+<td><code>image_url</code></td>
+<td>VARCHAR</td>
+<td></td>
+</tr>
+<tr>
+<td><code>reference_urls</code></td>
+<td>TEXT[]</td>
+<td></td>
+</tr>
+<tr>
+<td><code>rank_score</code></td>
+<td>FLOAT</td>
+<td><code>imp_score × time_decay_factor</code>. B-tree indexed.</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h3 id="54-repository-layer--apprepositories">5.4 Repository Layer — <code>app/repositories/</code> </h3>
+<p>The only code that executes SQL. Repositories accept an <code>AsyncSession</code> via constructor injection. They return ORM objects or primitives. Zero business logic.</p>
+<hr>
+<h4 id="source_repopy--sourcerepository"><code>source_repo.py</code> — <code>SourceRepository</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>SQL</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>create(data)</code></td>
+<td>INSERT + RETURNING</td>
+<td>Returns populated Source ORM object</td>
+</tr>
+<tr>
+<td><code>get_all(active_only)</code></td>
+<td>SELECT WHERE is_active</td>
+<td>Defaults to active only</td>
+</tr>
+<tr>
+<td><code>get_by_id(id)</code></td>
+<td>SELECT WHERE id</td>
+<td>Returns <code>None</code> on miss</td>
+</tr>
+<tr>
+<td><code>update(id, data)</code></td>
+<td>UPDATE SET … WHERE id</td>
+<td>Partial update (only non-None fields)</td>
+</tr>
+<tr>
+<td><code>delete(id)</code></td>
+<td>DELETE WHERE id</td>
+<td>Returns <code>True</code> if deleted</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="raw_ingestion_repopy--rawingestionrepository"><code>raw_ingestion_repo.py</code> — <code>RawIngestionRepository</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>SQL</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>store_batch(source_id, items)</code></td>
+<td>INSERT ON CONFLICT DO NOTHING</td>
+<td>Returns <code>{content_hash: id}</code> for all hashes — idempotent</td>
+</tr>
+<tr>
+<td><code>mark_filtered(source_id, hashes_by_normalizer)</code></td>
+<td>UPDATE SET status='filtered'</td>
+<td>Sets <code>normalized_by</code> to the model audit string</td>
+</tr>
+<tr>
+<td><code>mark_filtered_out(source_id, hashes, model_id)</code></td>
+<td>UPDATE SET status='filtered_out'</td>
+<td></td>
+</tr>
+<tr>
+<td><code>mark_failed(source_id, hashes, reason)</code></td>
+<td>UPDATE SET status='failed'</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<p><code>content_hash</code> = SHA-256(<code>str(source_id) + json.dumps(payload, sort_keys=True)</code>). Prevents re-processing the same article on every scheduler run.</p>
+<hr>
+<h4 id="filter_article_repopy--filterarticlerepository"><code>filter_article_repo.py</code> — <code>FilterArticleRepository</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>insert_batch(articles, hash_to_raw_id)</code></td>
+<td>Upsert on <code>main_url</code>. Returns <code>{url: filter_article_id}</code>.</td>
+</tr>
+<tr>
+<td><code>get_all(limit, offset, sub_category_id, q)</code></td>
+<td>JSONB <code>@&gt;</code> containment for sub_category_id filter</td>
+</tr>
+<tr>
+<td><code>get_by_id(id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>count(sub_category_id, q)</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="post_processed_article_repopy--postprocessedarticlerepository"><code>post_processed_article_repo.py</code> — <code>PostProcessedArticleRepository</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>insert_batch(articles, url_to_filter_id)</code></td>
+<td>Upsert on <code>filter_article_id</code>. Falls back to Stage 1 values if Stage 2 fields are missing.</td>
+</tr>
+<tr>
+<td><code>get_all(limit, offset, sub_category_id, q, from_date, to_date)</code></td>
+<td>Ordered by published_at DESC</td>
+</tr>
+<tr>
+<td><code>get_by_id(id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>count(…)</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="final_article_repopy--finalarticlerepository"><code>final_article_repo.py</code> — <code>FinalArticleRepository</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>upsert_batch(articles)</code></td>
+<td>Upsert on <code>post_processed_article_id</code>. Updates rank_score on re-publish.</td>
+</tr>
+<tr>
+<td><code>get_feed(limit, offset, sub_category_id, q)</code></td>
+<td>Ordered by <code>rank_score DESC</code></td>
+</tr>
+<tr>
+<td><code>get_by_id(id)</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>count(sub_category_id, q)</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="master_data_repopy--read-only-repos-for-reference-tables"><code>master_data_repo.py</code> — Read-only repos for reference tables </h4>
+<p><code>MasterCategoryRepository</code>, <code>MasterSubCategoryRepository</code>, <code>CountryRepository</code>, <code>StateRepository</code> — all read-only (<code>get_all</code>, <code>get_by_id</code>, <code>count</code>).</p>
+<hr>
+<h4 id="article_repopy"><code>article_repo.py</code> </h4>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code>ArticleRepository <span class="token operator">=</span> PostProcessedArticleRepository
+</code></pre><p>Backwards-compatible alias. Existing code that imports <code>ArticleRepository</code> continues to work.</p>
+<hr>
+<h3 id="55-schema-layer--appschemas">5.5 Schema Layer — <code>app/schemas/</code> </h3>
+<p>Pydantic models defining the HTTP contract. ORM objects never leak out of route handlers — they are always serialised through a schema first.</p>
+<p><code>model_config = {"from_attributes": True}</code> on all response schemas enables reading from SQLAlchemy ORM objects by attribute access.</p>
+<table>
+<thead>
+<tr>
+<th>Schema file</th>
+<th>Key models</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>source_schema.py</code></td>
+<td><code>SourceCreate</code>, <code>SourceUpdate</code>, <code>SourceResponse</code></td>
+</tr>
+<tr>
+<td><code>ai_provider_schema.py</code></td>
+<td><code>AIProviderCreate</code> (with examples for all 5 provider types), <code>AIProviderResponse</code>, <code>AIProviderActivateResponse</code></td>
+</tr>
+<tr>
+<td><code>article_schema.py</code></td>
+<td><code>PostProcessedArticleResponse</code>, <code>ArticleListResponse</code>, <code>ArticleResponse</code> (alias)</td>
+</tr>
+<tr>
+<td><code>final_article_schema.py</code></td>
+<td><code>FinalArticleResponse</code>, <code>FinalArticleListResponse</code></td>
+</tr>
+<tr>
+<td><code>master_data_schema.py</code></td>
+<td><code>MasterCategoryResponse</code>, <code>MasterSubCategoryResponse</code>, <code>StateResponse</code></td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h3 id="56-service-layer--appservices">5.6 Service Layer — <code>app/services/</code> </h3>
+<p>All business logic and orchestration lives here.</p>
+<hr>
+<h4 id="fetchersrss_fetcherpy--rssfetcher"><code>fetchers/rss_fetcher.py</code> — <code>RSSFetcher</code> </h4>
+<p>Fetches and parses RSS/Atom feeds.</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-async">async</span> <span class="token keyword keyword-def">def</span> <span class="token function">fetch</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> url<span class="token punctuation">:</span> <span class="token builtin">str</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> feedparser<span class="token punctuation">.</span>FeedParserDict<span class="token punctuation">:</span>
+    feed <span class="token operator">=</span> <span class="token keyword keyword-await">await</span> asyncio<span class="token punctuation">.</span>to_thread<span class="token punctuation">(</span>feedparser<span class="token punctuation">.</span>parse<span class="token punctuation">,</span> url<span class="token punctuation">)</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+</code></pre><p><code>asyncio.to_thread</code> is required because <code>feedparser.parse</code> is synchronous and blocking. Calling it directly in <code>async def</code> would freeze the entire event loop. The thread pool offloads it so other requests continue being served.</p>
+<p>If <code>feed.bozo</code> is <code>True</code> (malformed XML), it logs a warning and continues — partial feeds are better than no feed.</p>
+<hr>
+<h4 id="fetchersrest_fetcherpy--restfetcher"><code>fetchers/rest_fetcher.py</code> — <code>RestFetcher</code> </h4>
+<p>Fetches articles from a JSON REST API endpoint.</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code>_TIMEOUT <span class="token operator">=</span> httpx<span class="token punctuation">.</span>Timeout<span class="token punctuation">(</span><span class="token number">15.0</span><span class="token punctuation">,</span> connect<span class="token operator">=</span><span class="token number">5.0</span><span class="token punctuation">)</span>
+
+<span class="token keyword keyword-async">async</span> <span class="token keyword keyword-def">def</span> <span class="token function">fetch</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> url<span class="token punctuation">:</span> <span class="token builtin">str</span><span class="token punctuation">,</span> headers<span class="token punctuation">:</span> <span class="token builtin">dict</span> <span class="token operator">|</span> <span class="token boolean">None</span> <span class="token operator">=</span> <span class="token boolean">None</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">list</span><span class="token punctuation">[</span><span class="token builtin">dict</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+    <span class="token keyword keyword-async">async</span> <span class="token keyword keyword-with">with</span> httpx<span class="token punctuation">.</span>AsyncClient<span class="token punctuation">(</span>timeout<span class="token operator">=</span>_TIMEOUT<span class="token punctuation">)</span> <span class="token keyword keyword-as">as</span> client<span class="token punctuation">:</span>
+        response <span class="token operator">=</span> <span class="token keyword keyword-await">await</span> client<span class="token punctuation">.</span>get<span class="token punctuation">(</span>url<span class="token punctuation">,</span> headers<span class="token operator">=</span>headers <span class="token keyword keyword-or">or</span> <span class="token punctuation">{</span><span class="token punctuation">}</span><span class="token punctuation">)</span>
+        response<span class="token punctuation">.</span>raise_for_status<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+</code></pre><p>Handles four common envelope shapes (<code>[]</code>, <code>{"articles":[]}</code>, <code>{"items":[]}</code>, <code>{"results":[]}</code>) and always returns a flat <code>list[dict]</code>.</p>
+<hr>
+<h4 id="source_normalizerpy"><code>source_normalizer.py</code> </h4>
+<p>Pure transformation — converts raw feedparser entries or REST API dicts into plain Python types suitable for JSONB storage.</p>
+<ul>
+<li><code>_to_plain_dict(obj)</code>: Recursively converts <code>FeedParserDict</code> (a dict subclass with attribute access) to plain dicts. Without this, SQLAlchemy's JSONB serialiser raises <code>TypeError</code>.</li>
+<li><code>_parse_date(raw)</code>: Tries RFC 2822 (RSS) then ISO 8601 (REST). Returns a UTC <code>datetime</code> or <code>None</code>.</li>
+<li><code>normalize(item)</code>: Maps feed-specific field names to the canonical dict expected by <code>RawIngestionRepository.store_batch()</code>.</li>
+</ul>
+<hr>
+<h4 id="normalizationprovidersbasepy"><code>normalization/providers/base.py</code> </h4>
+<p>The most important file in the AI pipeline. Contains:</p>
+<p><strong><code>COMBINED_PROCESS_PROMPT</code> (Stage 1)</strong><br>
+Instructions for the AI to extract structured fields and multi-label crime classify. Key rules:</p>
+<ul>
+<li>Extract <code>title</code> and <code>description</code> verbatim — no rephrasing</li>
+<li>Classify <code>sub_category_ids</code> as a multi-label integer array (e.g. <code>[1, 3]</code>)</li>
+<li>Extract <code>location</code> as a city/state name string</li>
+</ul>
+<p><strong><code>POST_PROCESS_PROMPT</code> (Stage 2)</strong><br>
+Instructions for rewriting and scoring. Key rules:</p>
+<ul>
+<li>Rephrase <code>title</code> and <code>description</code> in original words (anti-plagiarism)</li>
+<li>Description must be ~100 words</li>
+<li>Extract <code>reference_urls</code> only from the provided <code>web_search_context</code> — never invented</li>
+<li>Assign <code>imp_score</code> 1–100 based on severity, impact, and recency</li>
+</ul>
+<p><strong>Pydantic output models:</strong></p>
+<ul>
+<li><code>CombinedOutput</code> — validates Stage 1 JSON with lenient field validators (bad fields default to <code>None</code>, not hard failure)</li>
+<li><code>PostProcessOutput</code> — validates Stage 2 JSON; URL validator rejects non-HTTP URLs</li>
+</ul>
+<p><strong>Helper functions:</strong></p>
+<ul>
+<li><code>build_process_message(raw_payload, source_type)</code> — builds the user message for Stage 1</li>
+<li><code>build_post_process_message(filter_article, search_context)</code> — builds the user message for Stage 2</li>
+<li><code>parse_combined_output(text, raw_payload)</code> — strips code fences, JSON-parses, Pydantic-validates</li>
+<li><code>parse_post_process_output(text)</code> — same for Stage 2</li>
+</ul>
+<p><strong><code>AIProvider</code> ABC:</strong></p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-class">class</span> <span class="token class-name">AIProvider</span><span class="token punctuation">(</span>ABC<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token decorator annotation punctuation">@property</span>
+    <span class="token decorator annotation punctuation">@abstractmethod</span>
+    <span class="token keyword keyword-def">def</span> <span class="token function">model_id</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">str</span><span class="token punctuation">:</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>          <span class="token comment"># e.g. "ai:gemini_langgraph:gemini-2.0-flash"</span>
+
+    <span class="token decorator annotation punctuation">@abstractmethod</span>
+    <span class="token keyword keyword-async">async</span> <span class="token keyword keyword-def">def</span> <span class="token function">process</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> raw_payload<span class="token punctuation">:</span> <span class="token builtin">dict</span><span class="token punctuation">,</span> source_type<span class="token punctuation">:</span> <span class="token builtin">str</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">dict</span> <span class="token operator">|</span> <span class="token boolean">None</span><span class="token punctuation">:</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+    <span class="token keyword keyword-async">async</span> <span class="token keyword keyword-def">def</span> <span class="token function">post_process</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> filter_article<span class="token punctuation">:</span> <span class="token builtin">dict</span><span class="token punctuation">,</span> search_context<span class="token punctuation">:</span> <span class="token builtin">str</span> <span class="token operator">=</span> <span class="token string">""</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">dict</span> <span class="token operator">|</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+        <span class="token keyword keyword-return">return</span> <span class="token boolean">None</span>   <span class="token comment"># default — providers override this</span>
+</code></pre><hr>
+<h4 id="normalizationprovidersopenai_provpy--openaicompatibleprovider"><code>normalization/providers/openai_prov.py</code> — <code>OpenAICompatibleProvider</code> </h4>
+<p>Used for: OpenAI GPT models, Gemini via its OpenAI-compatible REST endpoint, any custom server (Ollama, vLLM).</p>
+<ul>
+<li>Uses the <code>openai.AsyncOpenAI</code> client with a custom <code>base_url</code> for non-OpenAI backends</li>
+<li>Stage 1: sends <code>COMBINED_PROCESS_PROMPT</code> as system message with <code>response_format={"type": "json_object"}</code></li>
+<li>Stage 2: sends <code>POST_PROCESS_PROMPT</code> as system message</li>
+<li><code>max_tokens=1500</code> for both stages</li>
+</ul>
+<hr>
+<h4 id="normalizationprovidersanthropic_provpy--anthropicprovider"><code>normalization/providers/anthropic_prov.py</code> — <code>AnthropicProvider</code> </h4>
+<p>Used for: Anthropic Claude models.</p>
+<ul>
+<li>Uses <code>anthropic.AsyncAnthropic</code> client with Anthropic's native <code>system=</code> parameter (better instruction adherence than injecting as a user message)</li>
+<li><code>max_tokens=1500</code> for Stage 1, <code>600</code> for Stage 2</li>
+</ul>
+<hr>
+<h4 id="normalizationprovidersgemini_langgraph_provpy--geminilanggraphprovider"><code>normalization/providers/gemini_langgraph_prov.py</code> — <code>GeminiLangGraphProvider</code> </h4>
+<p>Used for: Gemini models via LangGraph agent graph.</p>
+<ul>
+<li>Builds a two-node LangGraph: <code>search_node</code> (DuckDuckGo context) → <code>process_node</code> (Gemini call)</li>
+<li>Passes search context to the AI prompt for better classification</li>
+</ul>
+<hr>
+<h4 id="normalizationprovidersgemini_multimodal_provpy--geminimultimodallanggraphprovider-recommended"><code>normalization/providers/gemini_multimodal_prov.py</code> — <code>GeminiMultimodalLangGraphProvider</code> <em>(recommended)</em> </h4>
+<p>Used for: Gemini with multimodal image support via LangGraph.</p>
+<p><strong>Stage 1 graph</strong> (3 nodes):</p>
+<ol>
+<li><code>extract_node</code> — lightweight dict traversal for candidate title/image/URL</li>
+<li><code>search_node</code> — DuckDuckGo news search for crime context</li>
+<li><code>classify_node</code> — Gemini <code>with_structured_output(FilterClassification)</code> — passes <code>image_url</code> if available for multimodal analysis</li>
+</ol>
+<p><strong>Stage 2 graph</strong> (separate):<br>
+Similar structure with rewrite + scoring nodes.</p>
+<hr>
+<h4 id="normalizationprovider_factorypy"><code>normalization/provider_factory.py</code> </h4>
+<p>Instantiates and <strong>caches</strong> AI provider objects. Caching is critical — providers hold HTTP connection pools internally, and recreating them per article would add connection overhead.</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code>_cache<span class="token punctuation">:</span> <span class="token builtin">dict</span><span class="token punctuation">[</span><span class="token builtin">tuple</span><span class="token punctuation">,</span> AIProvider<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token punctuation">{</span><span class="token punctuation">}</span>
+
+<span class="token keyword keyword-def">def</span> <span class="token function">create_from_config</span><span class="token punctuation">(</span>config<span class="token punctuation">:</span> AIProviderConfig<span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> AIProvider<span class="token punctuation">:</span>
+    key <span class="token operator">=</span> <span class="token punctuation">(</span>config<span class="token punctuation">.</span><span class="token builtin">id</span><span class="token punctuation">,</span> config<span class="token punctuation">.</span>model<span class="token punctuation">,</span> config<span class="token punctuation">.</span>api_key<span class="token punctuation">)</span>
+    <span class="token keyword keyword-if">if</span> key <span class="token keyword keyword-not">not</span> <span class="token keyword keyword-in">in</span> _cache<span class="token punctuation">:</span>
+        _cache<span class="token punctuation">[</span>key<span class="token punctuation">]</span> <span class="token operator">=</span> _build<span class="token punctuation">(</span>config<span class="token punctuation">)</span>
+    <span class="token keyword keyword-return">return</span> _cache<span class="token punctuation">[</span>key<span class="token punctuation">]</span>
+</code></pre><p><code>_build()</code> dispatches on <code>config.provider</code> to the correct provider class.</p>
+<hr>
+<h4 id="normalizationai_processorpy"><code>normalization/ai_processor.py</code> </h4>
+<p>Resolves which AI provider to use. Resolution order:</p>
+<ol>
+<li><strong>DB active config</strong> → <code>provider_factory.create_from_config(active_config)</code></li>
+<li><strong><code>GEMINI_API_KEY</code> env</strong> → <code>GeminiMultimodalLangGraphProvider</code> (recommended default)</li>
+<li><strong><code>ANTHROPIC_API_KEY</code> env</strong> → <code>AnthropicProvider</code></li>
+<li><strong><code>None</code></strong> → articles are dropped at AI stage</li>
+</ol>
+<hr>
+<h4 id="normalizationresolverspy"><code>normalization/resolvers.py</code> </h4>
+<p><strong><code>CategoryResolver</code></strong> — stateless, enum-based, zero DB queries:</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-def">def</span> <span class="token function">resolve</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> ai_str<span class="token punctuation">:</span> <span class="token builtin">str</span> <span class="token operator">|</span> <span class="token boolean">None</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">int</span> <span class="token operator">|</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+    <span class="token keyword keyword-return">return</span> <span class="token builtin">int</span><span class="token punctuation">(</span>AI_STRING_TO_SUB_CATEGORY<span class="token punctuation">[</span>ai_str<span class="token punctuation">.</span>lower<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>strip<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+<span class="token keyword keyword-def">def</span> <span class="token function">resolve_all</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> ai_str_list<span class="token punctuation">:</span> <span class="token builtin">list</span><span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">list</span><span class="token punctuation">[</span><span class="token builtin">int</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+    <span class="token comment"># Returns deduplicated list of SubCategoryEnum int values</span>
+
+<span class="token keyword keyword-def">def</span> <span class="token function">resolve_categories_from_ids</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> sub_cat_ids<span class="token punctuation">:</span> <span class="token builtin">list</span><span class="token punctuation">[</span><span class="token builtin">int</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">list</span><span class="token punctuation">[</span><span class="token builtin">int</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+    <span class="token comment"># Maps SubCategoryEnum → CategoryEnum via SUB_CATEGORY_TO_CATEGORY dict</span>
+</code></pre><p><strong><code>LocationResolver</code></strong> — DB-backed, loaded once per ingest run:</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-def">def</span> <span class="token function">resolve</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> location<span class="token punctuation">:</span> <span class="token builtin">str</span> <span class="token operator">|</span> <span class="token boolean">None</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token builtin">int</span> <span class="token operator">|</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+    <span class="token comment"># Two-pass: direct state name match, then city → state alias lookup</span>
+    <span class="token comment"># _CITY_TO_STATE: dict of ~80 Indian cities to their state names</span>
+</code></pre><p><code>load_resolvers(db)</code> is called once at the top of <code>IngestionService.ingest()</code>:</p>
+<ul>
+<li>Only queries the <code>state</code> table (36 rows)</li>
+<li>Returns <code>(CategoryResolver(), LocationResolver(state_map))</code></li>
+</ul>
+<hr>
+<h4 id="ingestion_servicepy--ingestionservice"><code>ingestion_service.py</code> — <code>IngestionService</code> </h4>
+<p><strong>The pipeline orchestrator.</strong> Wires together all fetchers, AI providers, resolvers, and repositories to run the full two-stage processing pipeline.</p>
+<p><strong>Constructor params:</strong></p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token keyword keyword-def">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> source_repo<span class="token punctuation">,</span> raw_repo<span class="token punctuation">,</span> filter_article_repo<span class="token punctuation">,</span>
+             post_processed_repo<span class="token punctuation">,</span> ai_provider_repo<span class="token punctuation">,</span> db<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">)</span>
+</code></pre><p><strong><code>ingest(source)</code> — full pipeline in order:</strong></p>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>1. FETCH
+   RSSFetcher.fetch(url)  or  RestFetcher.fetch(url, headers)
+   → list of raw items
+
+2. STORE RAW
+   raw_ingestion_repo.store_batch(source_id, items)
+   → {content_hash: raw_ingestion_id}
+   Skips items whose content_hash already exists (idempotent).
+
+3. LOAD AI PROVIDER
+   ai_processor.get_active_provider(ai_provider_repo)
+   → AIProvider instance (cached by provider_factory)
+
+4. STAGE 1 — AI FILTER (concurrent, rate-limited)
+   For each raw item:
+     acquire rate limiter token  (AI_REQUESTS_PER_MINUTE)
+     acquire semaphore           (concurrency cap)
+     ai_provider.process(raw_payload, source_type)
+     → article dict or None
+   asyncio.gather(*tasks)  ← all items processed concurrently
+
+5. SPLIT RESULTS
+   crime articles        → proceed to Stage 2
+   non-crime / None      → mark raw_ingestion status = 'filtered_out'
+   exceptions            → retry up to AI_RETRY_ATTEMPTS times with backoff
+
+6. RESOLVE FOREIGN KEYS (once per batch)
+   load_resolvers(db)
+   For each crime article:
+     sub_category_ids  = cat_resolver.resolve_all(article["sub_category_ids"])
+     category_ids      = cat_resolver.resolve_categories_from_ids(sub_category_ids)
+     sub_category_id   = cat_resolver.resolve(article["sub_category"])   (single best)
+     location_state_id = loc_resolver.resolve(article["location"])
+
+7. STAGE 2 — POST-PROCESS (concurrent, rate-limited)
+   For each crime article:
+     DuckDuckGo search for article title  ← outside rate limiter (not an AI call)
+     acquire rate limiter token
+     acquire semaphore
+     ai_provider.post_process(article, search_context)
+     → {rewritten_title, rewritten_description, reference_urls, imp_score}
+
+8. WRITE STAGE 1
+   filter_article_repo.insert_batch(crime_articles, hash_to_raw_id)
+   → {main_url: filter_article_id}
+
+9. WRITE STAGE 2
+   post_processed_repo.insert_batch(crime_articles, url_to_filter_id)
+
+10. AUDIT
+    raw_ingestion_repo.mark_filtered(crime hashes, model_id)
+    raw_ingestion_repo.mark_filtered_out(non-crime hashes)
+    raw_ingestion_repo.mark_failed(failed hashes)
+</code></pre><p><strong>Rate limiting:</strong></p>
+<p>A process-level singleton <code>_RateLimiter</code> and <code>asyncio.Semaphore</code> are shared across all concurrent sources and both pipeline stages:</p>
+<pre data-role="codeBlock" data-info="python" class="language-python python"><code><span class="token comment"># Rate limiter: enforces AI_REQUESTS_PER_MINUTE</span>
+<span class="token comment"># Semaphore concurrency:</span>
+<span class="token comment">#   RPM ≤ 10  → 1 concurrent AI call</span>
+<span class="token comment">#   RPM ≤ 30  → 2 concurrent AI calls</span>
+<span class="token comment">#   RPM ≤ 100 → 5 concurrent AI calls</span>
+<span class="token comment">#   RPM &gt; 100 → 10 concurrent AI calls</span>
+</code></pre><p><strong>Retry logic:</strong> On HTTP 429 / quota exhausted responses, retries up to <code>AI_RETRY_ATTEMPTS</code> times with exponential backoff (<code>delay × 2^attempt</code>).</p>
+<p><strong>DuckDuckGo timeout:</strong> Wrapped in <code>asyncio.wait_for(timeout=settings.DUCKDUCKGO_TIMEOUT_SECONDS)</code>. If search hangs, it is cancelled and the article proceeds without reference URLs (non-fatal).</p>
+<hr>
+<h4 id="publishing_servicepy--publishingservice"><code>publishing_service.py</code> — <code>PublishingService</code> </h4>
+<p>Selects top N post-processed articles and writes the ranked public feed.</p>
+<p><strong><code>publish(top_n=20)</code>:</strong></p>
+<ol>
+<li><code>post_processed_repo.get_all(...)</code> ordered by <code>imp_score DESC WHERE imp_score IS NOT NULL</code> — uses partial index</li>
+<li>For each article: <code>rank_score = imp_score × _time_decay_factor(published_at)</code></li>
+<li><code>final_article_repo.upsert_batch(ranked_articles)</code></li>
+</ol>
+<p><strong>Time decay factors</strong> (from <code>settings</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Age</th>
+<th>Factor</th>
+<th>Result for imp_score=80</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 6 hours</td>
+<td>1.00</td>
+<td>80.0</td>
+</tr>
+<tr>
+<td>6–24 hours</td>
+<td>0.75</td>
+<td>60.0</td>
+</tr>
+<tr>
+<td>1–3 days</td>
+<td>0.50</td>
+<td>40.0</td>
+</tr>
+<tr>
+<td>3–7 days</td>
+<td>0.25</td>
+<td>20.0</td>
+</tr>
+<tr>
+<td>&gt; 7 days</td>
+<td>0.10</td>
+<td>8.0</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="schedulerpy"><code>scheduler.py</code> </h4>
+<p>Two APScheduler jobs registered on <code>AsyncIOScheduler</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Job</th>
+<th>Trigger</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ingestion_all_sources</code></td>
+<td>Every <code>INGEST_INTERVAL_MINUTES</code></td>
+<td>Loads active sources, runs <code>IngestionService.ingest()</code> for each concurrently via <code>asyncio.gather()</code></td>
+</tr>
+<tr>
+<td><code>publish_final_feed</code></td>
+<td>Every <code>PUBLISH_INTERVAL_MINUTES</code> + <code>PUBLISH_OFFSET_SECONDS</code></td>
+<td>Runs <code>PublishingService.publish(top_n=FEED_TOP_N)</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each source gets its own <code>AsyncSession</code> to isolate DB transactions. <code>max_instances=1</code> prevents job pile-up if a previous run is still in progress.</p>
+<hr>
+<h3 id="57-api-layer--appapi">5.7 API Layer — <code>app/api/</code> </h3>
+<p>Thin controllers — validate input, call a service or repository, return a typed schema. No SQL, no business logic.</p>
+<hr>
+<h4 id="routes_final_articlespy--prefix-final-articles"><code>routes_final_articles.py</code> — prefix <code>/final-articles</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Handler</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/</code></td>
+<td><code>list_final_articles</code></td>
+<td>Ranked news feed, ordered by rank_score DESC</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/{article_id}</code></td>
+<td><code>get_final_article</code></td>
+<td>Single article by ID</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/publish</code></td>
+<td><code>trigger_publishing</code></td>
+<td>Force a publishing run immediately</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="routes_sourcespy--prefix-sources"><code>routes_sources.py</code> — prefix <code>/sources</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/</code></td>
+<td>Register a new source (201)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/</code></td>
+<td>List sources (active only by default)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/{id}</code></td>
+<td>Get one source</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td><code>/{id}</code></td>
+<td>Update name/url/config/is_active</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/{id}</code></td>
+<td>Permanently delete (204)</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="routes_ingestpy--prefix-ingest"><code>routes_ingest.py</code> — prefix <code>/ingest</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/</code></td>
+<td>Run full pipeline for <code>source_id</code> immediately</td>
+</tr>
+</tbody>
+</table>
+<p>Validates source exists (404) and source type is supported (400) before calling <code>IngestionService.ingest()</code>.</p>
+<hr>
+<h4 id="routes_ai_providerspy--prefix-ai-providers"><code>routes_ai_providers.py</code> — prefix <code>/ai-providers</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/</code></td>
+<td>Register config (starts inactive)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/</code></td>
+<td>List all configs (api_key excluded)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/active</code></td>
+<td>Get currently active config</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/{id}</code></td>
+<td>Get one config</td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td><code>/{id}/activate</code></td>
+<td>Make active, deactivate all others</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/active</code></td>
+<td>Deactivate all (fall back to env)</td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/{id}</code></td>
+<td>Delete permanently</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h4 id="routes_master_datapy--prefix-master"><code>routes_master_data.py</code> — prefix <code>/master</code> </h4>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/categories/</code></td>
+<td>All crime categories</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/categories/{id}</code></td>
+<td>One category</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/sub-categories/</code></td>
+<td>All crime sub-categories (filter by category_id)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/sub-categories/{id}</code></td>
+<td>One sub-category</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/states/</code></td>
+<td>All states (filter by country_id)</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/states/{id}</code></td>
+<td>One state</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h3 id="58-migrations">5.8 Migrations </h3>
+<p>All migrations live in <code>migrations/versions/</code>. Applied with <code>alembic upgrade head</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Migration</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>29df1b34</code></td>
+<td>Initial schema: <code>news_sources</code>, <code>articles</code></td>
+</tr>
+<tr>
+<td><code>c8f2a1e3</code></td>
+<td>Add <code>raw_ingestion</code> table</td>
+</tr>
+<tr>
+<td><code>d9e4f5a6</code></td>
+<td>Add <code>ai_provider_configs</code> table</td>
+</tr>
+<tr>
+<td><code>e1f2a3b4</code></td>
+<td>Add enrichment fields to articles</td>
+</tr>
+<tr>
+<td><code>f2g3h4i5</code></td>
+<td>Add article card fields</td>
+</tr>
+<tr>
+<td><code>g3h4i5j6</code></td>
+<td>Widen <code>normalized_by</code> VARCHAR(50→200)</td>
+</tr>
+<tr>
+<td><code>h4i5j6k7</code></td>
+<td><strong>Pipeline redesign</strong> — adds <code>filtered_articles</code>, <code>post_processed_articles</code>, <code>master_category</code>, <code>master_sub_category</code>, <code>country</code>, <code>state</code></td>
+</tr>
+<tr>
+<td><code>i5j6k7l8</code></td>
+<td>Seed master data (8 categories, 10 sub-categories, India + 36 states)</td>
+</tr>
+<tr>
+<td><code>j6k7l8m9</code></td>
+<td>Pipeline enhancements — add <code>sub_category_ids</code> JSONB, <code>location_state_id</code>, <code>imp_score</code>, <code>final_articles</code></td>
+</tr>
+<tr>
+<td><code>k7l8m9n0</code></td>
+<td>Cleanup — rename <code>filter_articles</code> → <code>filtered_articles</code>, drop orphaned <code>category_id</code> FK, add <code>category_ids</code> JSONB</td>
+</tr>
+<tr>
+<td><code>l8m9n0o1</code></td>
+<td><strong>Performance indexes</strong> — GIN on <code>sub_category_ids</code>/<code>category_ids</code>, B-tree on <code>raw_ingestion.status</code>, partial B-tree on <code>imp_score</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>migrations/env.py</code> uses <code>async_engine_from_config</code> with <code>asyncio.run()</code> to bridge the sync Alembic runner into async context (required for asyncpg). <code>pool.NullPool</code> is used so the process exits cleanly after migration.</p>
+<hr>
+<h2 id="6-full-data-flow">6. Full Data Flow </h2>
+<h3 id="scheduled-ingestion-every-5-minutes">Scheduled ingestion (every 5 minutes) </h3>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>scheduler.py: run_ingestion_for_all_active_sources()
+  │
+  ├── SourceRepository.get_all(active_only=True)
+  │     SELECT * FROM news_sources WHERE is_active = true
+  │
+  └── For each source (concurrent via asyncio.gather):
+        IngestionService.ingest(source)
+          │
+          ├─ 1. FETCH
+          │     RSSFetcher.fetch(url)  →  feedparser (thread pool)
+          │  or RestFetcher.fetch(url)  →  httpx async
+          │
+          ├─ 2. STORE RAW
+          │     raw_ingestion_repo.store_batch()
+          │     INSERT INTO raw_ingestion ... ON CONFLICT (content_hash) DO NOTHING
+          │
+          ├─ 3. LOAD AI
+          │     ai_processor.get_active_provider(ai_provider_repo)
+          │     → reads ai_provider_configs WHERE is_active = true
+          │     → falls back to GEMINI_API_KEY env if no DB config
+          │
+          ├─ 4. STAGE 1 (concurrent, rate-limited)
+          │     for each raw item:
+          │       [rate limiter + semaphore]
+          │       ai_provider.process(raw_payload, source_type)
+          │       → AI returns JSON → CombinedOutput Pydantic validation
+          │
+          ├─ 5. SPLIT: crime / non-crime / failed
+          │
+          ├─ 6. RESOLVE FKs (enum + DB state lookup)
+          │     sub_category_ids, category_ids, sub_category_id, location_state_id
+          │
+          ├─ 7. STAGE 2 (concurrent, rate-limited)
+          │     for each crime article:
+          │       DuckDuckGo.ainvoke(title)  →  search_context string
+          │       [rate limiter + semaphore]
+          │       ai_provider.post_process(article, search_context)
+          │       → AI returns JSON → PostProcessOutput Pydantic validation
+          │
+          ├─ 8. WRITE Stage 1
+          │     filter_article_repo.insert_batch()
+          │     INSERT INTO filtered_articles ... ON CONFLICT (main_url) DO UPDATE
+          │
+          ├─ 9. WRITE Stage 2
+          │     post_processed_repo.insert_batch()
+          │     INSERT INTO post_processed_articles ... ON CONFLICT (filter_article_id) DO UPDATE
+          │
+          └─ 10. AUDIT
+                raw_ingestion_repo.mark_filtered / mark_filtered_out / mark_failed
+</code></pre><h3 id="scheduled-publishing-every-5-minutes--30s-offset">Scheduled publishing (every 5 minutes + 30s offset) </h3>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>scheduler.py: run_publishing()
+  │
+  └── PublishingService.publish(top_n=20)
+        │
+        ├── post_processed_repo.get_all(ordered by imp_score DESC, NOT NULL)
+        │     ← uses partial index: ix_post_processed_articles_imp_score_scored
+        │
+        ├── for each article:
+        │     rank_score = imp_score × _time_decay_factor(published_at)
+        │
+        └── final_article_repo.upsert_batch(ranked_articles)
+              INSERT INTO final_articles ... ON CONFLICT (post_processed_article_id) DO UPDATE SET rank_score = ...
+</code></pre><h3 id="frontend-reads-the-feed">Frontend reads the feed </h3>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>GET /final-articles/?limit=20&amp;offset=0
+  │
+  └── FinalArticleRepository.get_feed()
+        SELECT * FROM final_articles ORDER BY rank_score DESC LIMIT 20
+        ← uses ix_final_articles_rank_score index
+</code></pre><hr>
+<h2 id="7-database-schema">7. Database Schema </h2>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>┌─────────────────────────────────────────────────────────────────┐
+│                        news_sources                             │
+│  id · name · type · url(UNIQUE) · config(JSONB) · is_active     │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ 1:N  CASCADE
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        raw_ingestion                            │
+│  id · source_id · content_hash(UNIQUE) · raw_payload(JSONB)     │
+│  status · normalized_by · error_message · retry_count           │
+└────────────────────────────┬────────────────────────────────────┘
+                             │ 1:1  SET NULL
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      filtered_articles                          │
+│  id · raw_ingestion_id(UNIQUE) · title · description            │
+│  main_url(UNIQUE) · image_url · published_at · created_at       │
+│  sub_category_ids(JSONB GIN) · category_ids(JSONB GIN)          │
+│  location_state_id ──────────────────────────────┐             │
+└────────────────────────────┬─────────────────────│─────────────┘
+                             │ 1:1  SET NULL        │ FK
+                             ▼                      ▼
+┌────────────────────────────────────────┐  ┌───────────────┐
+│       post_processed_articles          │  │     state     │
+│  id · filter_article_id(UNIQUE)        │  │  id · name    │
+│  title · description · image_url       │  │  country_id   │
+│  reference_urls(TEXT[])                │  └───────┬───────┘
+│  published_at · imp_score(INT 1-100)   │          │ FK
+│  sub_category_id ─────────────────┐   │  ┌───────┴───────┐
+│  location_id ──────────────────────────┘  │    country    │
+└────────────────────────────┬───────┘      │  id · name    │
+                             │              └───────────────┘
+         sub_category_id FK  │
+                             ▼
+┌───────────────────────────────────────┐
+│          master_sub_category          │
+│  id · category_id · name · is_active  │
+└────────────────┬──────────────────────┘
+                 │ FK
+                 ▼
+        ┌─────────────────────┐
+        │   master_category   │
+        │  id · name · ...    │
+        └─────────────────────┘
+
+post_processed_articles
+         │ 1:1  SET NULL
+         ▼
+┌────────────────────────────────────────────────┐
+│                  final_articles                │
+│  id · post_processed_article_id(UNIQUE)        │
+│  title · description · image_url               │
+│  reference_urls(TEXT[]) · rank_score(FLOAT)    │
+│  created_at                                    │
+└────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────┐
+│              ai_provider_configs              │
+│  id · name · provider · model · api_key       │
+│  base_url · is_active(partial UNIQUE)         │
+└───────────────────────────────────────────────┘
+</code></pre><hr>
+<h2 id="8-ai-pipeline-deep-dive">8. AI Pipeline Deep Dive </h2>
+<h3 id="provider-selection-order">Provider selection order </h3>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>IngestionService._load_ai_provider()
+  │
+  ├─ 1. ai_provider_repo.get_active()
+  │       SELECT FROM ai_provider_configs WHERE is_active = true
+  │       → if found: provider_factory.create_from_config(config)
+  │
+  ├─ 2. settings.GEMINI_API_KEY is set?
+  │       → GeminiMultimodalLangGraphProvider("gemini-2.0-flash")  ← recommended
+  │
+  ├─ 3. settings.ANTHROPIC_API_KEY is set?
+  │       → AnthropicProvider("claude-haiku-4-5-20251001")
+  │
+  └─ 4. None → articles dropped at AI stage, logged as warnings
+</code></pre><h3 id="stage-1-prompt-output-contract">Stage 1 prompt output contract </h3>
+<pre data-role="codeBlock" data-info="json" class="language-json json"><code><span class="token punctuation">{</span>
+  <span class="token property">"title"</span><span class="token operator">:</span> <span class="token string">"string — extracted verbatim"</span><span class="token punctuation">,</span>
+  <span class="token property">"url"</span><span class="token operator">:</span> <span class="token string">"string"</span><span class="token punctuation">,</span>
+  <span class="token property">"description"</span><span class="token operator">:</span> <span class="token string">"string | null — 1–3 sentences, HTML-cleaned"</span><span class="token punctuation">,</span>
+  <span class="token property">"image_url"</span><span class="token operator">:</span> <span class="token string">"string | null"</span><span class="token punctuation">,</span>
+  <span class="token property">"published_at"</span><span class="token operator">:</span> <span class="token string">"ISO 8601 string | null"</span><span class="token punctuation">,</span>
+  <span class="token property">"is_crime"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+  <span class="token property">"sub_category_ids"</span><span class="token operator">:</span> <span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+  <span class="token property">"sub_category"</span><span class="token operator">:</span> <span class="token string">"murder"</span><span class="token punctuation">,</span>
+  <span class="token property">"category"</span><span class="token operator">:</span> <span class="token string">"Violent Crime"</span><span class="token punctuation">,</span>
+  <span class="token property">"location"</span><span class="token operator">:</span> <span class="token string">"Mumbai, Maharashtra"</span><span class="token punctuation">,</span>
+  <span class="token property">"region"</span><span class="token operator">:</span> <span class="token string">"West"</span><span class="token punctuation">,</span>
+  <span class="token property">"importance_score"</span><span class="token operator">:</span> <span class="token number">7</span>
+<span class="token punctuation">}</span>
+</code></pre><h3 id="stage-2-prompt-output-contract">Stage 2 prompt output contract </h3>
+<pre data-role="codeBlock" data-info="json" class="language-json json"><code><span class="token punctuation">{</span>
+  <span class="token property">"rewritten_title"</span><span class="token operator">:</span> <span class="token string">"string — rephrased, max 15 words"</span><span class="token punctuation">,</span>
+  <span class="token property">"rewritten_description"</span><span class="token operator">:</span> <span class="token string">"string — ~100 words, rephrased"</span><span class="token punctuation">,</span>
+  <span class="token property">"reference_urls"</span><span class="token operator">:</span> <span class="token punctuation">[</span><span class="token string">"https://..."</span><span class="token punctuation">,</span> <span class="token string">"https://..."</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+  <span class="token property">"imp_score"</span><span class="token operator">:</span> <span class="token number">72</span>
+<span class="token punctuation">}</span>
+</code></pre><h3 id="why-two-stages">Why two stages? </h3>
+<p>Stage 1 is fast and cheap — it extracts and classifies. Running it on all articles (including non-crime) at low cost lets us filter aggressively.</p>
+<p>Stage 2 is slower and more expensive — it rewrites, searches the web, and scores. Running it only on the crime-relevant subset (typically 10–30% of all ingested articles) keeps costs manageable.</p>
+<hr>
+<h2 id="9-background-scheduler">9. Background Scheduler </h2>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>app startup (lifespan)
+  └── start_scheduler()
+        │
+        ├── Job 1: ingestion_all_sources
+        │     trigger: interval, every INGEST_INTERVAL_MINUTES minutes
+        │     max_instances: 1  (no pile-up if previous run is still going)
+        │
+        └── Job 2: publish_final_feed
+              trigger: interval, every PUBLISH_INTERVAL_MINUTES minutes
+                        + PUBLISH_OFFSET_SECONDS seconds delay
+              max_instances: 1
+              (30s offset ensures Stage 2 data is written before ranking runs)
+</code></pre><hr>
+<h2 id="10-configuration-reference">10. Configuration Reference </h2>
+<p>All values set in <code>.env</code>. Sensible defaults shown — only <code>DATABASE_URL</code> is required.</p>
+<pre data-role="codeBlock" data-info="" class="language-text"><code>DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname   # REQUIRED
+
+GEMINI_API_KEY=AIzaSy...          # recommended — activates GeminiMultimodal provider
+ANTHROPIC_API_KEY=sk-ant-...      # fallback if no GEMINI_API_KEY
+DEBUG=false                       # true logs all SQL queries
+
+AI_REQUESTS_PER_MINUTE=5          # free Gemini tier limit
+AI_RETRY_ATTEMPTS=3
+AI_RETRY_DELAY_SECONDS=15.0
+
+INGEST_INTERVAL_MINUTES=5
+PUBLISH_INTERVAL_MINUTES=5
+PUBLISH_OFFSET_SECONDS=30
+FEED_TOP_N=20
+
+DUCKDUCKGO_TIMEOUT_SECONDS=10.0
+
+DECAY_FRESH=1.00    # &lt; 6h
+DECAY_RECENT=0.75   # 6–24h
+DECAY_DAY=0.50      # 1–3d
+DECAY_WEEK=0.25     # 3–7d
+DECAY_OLD=0.10      # &gt; 7d
+</code></pre><hr>
+<h2 id="11-development-commands">11. Development Commands </h2>
+<pre data-role="codeBlock" data-info="bash" class="language-bash bash"><code><span class="token comment"># Install dependencies</span>
+uv <span class="token function">sync</span>
+
+<span class="token comment"># Run dev server with auto-reload</span>
+.venv/bin/uvicorn app.main:app <span class="token parameter variable">--reload</span>
+
+<span class="token comment"># Apply all pending migrations</span>
+.venv/bin/alembic upgrade <span class="token function">head</span>
+
+<span class="token comment"># Roll back one migration</span>
+.venv/bin/alembic downgrade <span class="token parameter variable">-1</span>
+
+<span class="token comment"># Check current migration state</span>
+.venv/bin/alembic current
+
+<span class="token comment"># View migration history</span>
+.venv/bin/alembic <span class="token function">history</span>
+
+<span class="token comment"># Create a new migration after changing models</span>
+.venv/bin/alembic revision <span class="token parameter variable">--autogenerate</span> <span class="token parameter variable">-m</span> <span class="token string">"describe_change"</span>
+</code></pre><p><strong>End-to-end manual test:</strong></p>
+<pre data-role="codeBlock" data-info="bash" class="language-bash bash"><code><span class="token comment"># 1. Start server</span>
+.venv/bin/uvicorn app.main:app <span class="token parameter variable">--reload</span>
+
+<span class="token comment"># 2. Register a Gemini AI provider</span>
+<span class="token function">curl</span> <span class="token parameter variable">-X</span> POST http://localhost:8000/ai-providers/ <span class="token punctuation">\</span>
+  <span class="token parameter variable">-H</span> <span class="token string">"Content-Type: application/json"</span> <span class="token punctuation">\</span>
+  <span class="token parameter variable">-d</span> <span class="token string">'{"name":"Gemini","provider":"gemini_multimodal","model":"gemini-2.0-flash","api_key":"AIzaSy..."}'</span>
+<span class="token comment"># → {"id":1, ...}</span>
+
+<span class="token comment"># 3. Activate it</span>
+<span class="token function">curl</span> <span class="token parameter variable">-X</span> PATCH http://localhost:8000/ai-providers/1/activate
+
+<span class="token comment"># 4. Add a crime news source</span>
+<span class="token function">curl</span> <span class="token parameter variable">-X</span> POST http://localhost:8000/sources/ <span class="token punctuation">\</span>
+  <span class="token parameter variable">-H</span> <span class="token string">"Content-Type: application/json"</span> <span class="token punctuation">\</span>
+  <span class="token parameter variable">-d</span> <span class="token string">'{"name":"India News","type":"rss","url":"https://...crime-feed-url.../rss"}'</span>
+<span class="token comment"># → {"id":2, ...}</span>
+
+<span class="token comment"># 5. Trigger ingestion immediately</span>
+<span class="token function">curl</span> <span class="token parameter variable">-X</span> POST http://localhost:8000/ingest/ <span class="token punctuation">\</span>
+  <span class="token parameter variable">-H</span> <span class="token string">"Content-Type: application/json"</span> <span class="token punctuation">\</span>
+  <span class="token parameter variable">-d</span> <span class="token string">'{"source_id": 2}'</span>
+<span class="token comment"># → {"source_id":2,"source_type":"rss","ingested":14}</span>
+
+<span class="token comment"># 6. Trigger publishing</span>
+<span class="token function">curl</span> <span class="token parameter variable">-X</span> POST <span class="token string">"http://localhost:8000/final-articles/publish"</span>
+
+<span class="token comment"># 7. Read the ranked feed</span>
+<span class="token function">curl</span> <span class="token string">"http://localhost:8000/final-articles/?limit=10"</span>
+
+<span class="token comment"># 8. Browse all endpoints</span>
+<span class="token function">open</span> http://localhost:8000/docs
+</code></pre>
+      </div>
+      
+      
+    
+    
+    
+    
+    
+    
+  
+    </body></html>

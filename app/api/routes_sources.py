@@ -1,20 +1,3 @@
-"""
-app/api/routes_sources.py — News Source CRUD Endpoints
-=======================================================
-HTTP API for managing news sources (RSS feeds and REST API endpoints).
-A "source" is a URL the system fetches articles from automatically every 5 minutes.
-
-Endpoints:
-  POST /sources/        → register a new news source
-  GET  /sources/        → list all active sources
-  GET  /sources/{id}    → get one source by ID
-
-Typical usage flow:
-  1. POST /sources/ with name, type="rss", url="https://example.com/feed.rss"
-  2. POST /ingest/ with {"source_id": 1} to test it immediately
-  3. Scheduler automatically fetches it every 5 minutes going forward
-"""
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.deps import get_source_repo
@@ -24,77 +7,68 @@ from app.schemas.source_schema import SourceCreate, SourceResponse, SourceUpdate
 router = APIRouter()
 
 
-@router.post("/", response_model=SourceResponse, status_code=201, summary="Register a new news source")
+@router.post(
+    "/",
+    response_model=SourceResponse,
+    status_code=201,
+    summary="Add a news source",
+)
 async def create_source(
-    payload: SourceCreate,              # Request body (validated by Pydantic automatically)
+    payload: SourceCreate,
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """Register a new news source.
+    """Registers a new RSS feed or REST API as a news source.
 
-    Example request body:
-    {
-        "name": "TOI Crime",
-        "type": "rss",
-        "url": "https://timesofindia.indiatimes.com/rssfeeds/7503091.cms",
-        "config": null
-    }
-
-    For REST APIs with authentication:
-    {
-        "name": "NewsAPI Crime",
-        "type": "rest",
-        "url": "https://newsapi.org/v2/top-headlines?category=crime&apiKey=...",
-        "config": {"headers": {"Authorization": "Bearer YOUR_API_KEY"}}
-    }
-
-    status_code=201: HTTP 201 Created is the correct status for successful resource creation.
-    (200 OK would also work but 201 is semantically more accurate.)
+    The source is activated immediately and will be fetched on the next
+    scheduler cycle (every 5 minutes). Use `POST /ingest/` to fetch it now.
     """
-    # repo.create() inserts the new source and returns it with id and created_at populated
     return await repo.create(payload)
 
 
-@router.get("/", response_model=list[SourceResponse], summary="List news sources")
+@router.get(
+    "/",
+    response_model=list[SourceResponse],
+    summary="List news sources",
+)
 async def list_sources(
-    include_inactive: bool = Query(False, description="Set true to include paused/inactive sources"),
+    include_inactive: bool = Query(False, description="Include paused sources"),
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """List news sources. Active sources only by default.
-
-    Pass `?include_inactive=true` to also see sources that have been paused
-    (is_active=false). Useful for re-activating a source without re-adding it.
-    """
-    active_only = not include_inactive
-    return await repo.get_all(active_only=active_only)
+    """Returns all registered news sources. Active sources only by default."""
+    return await repo.get_all(active_only=not include_inactive)
 
 
-@router.get("/{source_id}", response_model=SourceResponse, summary="Get source by ID")
+@router.get(
+    "/{source_id}",
+    response_model=SourceResponse,
+    summary="Get a source by ID",
+    responses={404: {"description": "Source not found"}},
+)
 async def get_source(
     source_id: int,
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """Get a single source by its ID. Returns 404 if it doesn't exist."""
+    """Returns a single news source by its ID."""
     source = await repo.get_by_id(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return source
 
 
-@router.patch("/{source_id}", response_model=SourceResponse, summary="Update a source")
+@router.patch(
+    "/{source_id}",
+    response_model=SourceResponse,
+    summary="Update a source",
+    responses={404: {"description": "Source not found"}},
+)
 async def update_source(
     source_id: int,
     payload: SourceUpdate,
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """Partially update a source. Only the fields you send are changed.
+    """Partially updates a source. Only provided fields are changed.
 
-    Common uses:
-      - Pause a source:    `{"is_active": false}`
-      - Resume a source:   `{"is_active": true}`
-      - Change the URL:    `{"url": "https://new-feed.example.com/rss"}`
-
-    The scheduler respects is_active immediately on the next 5-minute cycle.
-    Returns 404 if the source doesn't exist.
+    To pause fetching: `{"is_active": false}`. To resume: `{"is_active": true}`.
     """
     source = await repo.update(source_id, payload)
     if source is None:
@@ -102,17 +76,17 @@ async def update_source(
     return source
 
 
-@router.delete("/{source_id}", status_code=204, summary="Delete a source")
+@router.delete(
+    "/{source_id}",
+    status_code=204,
+    summary="Delete a source",
+    responses={404: {"description": "Source not found"}},
+)
 async def delete_source(
     source_id: int,
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """Permanently delete a source and stop fetching from it.
-
-    To temporarily pause instead of deleting, use PATCH with `{"is_active": false}`.
-    Returns 404 if the source doesn't exist.
-    status_code=204: success with no response body.
-    """
+    """Permanently removes a source. To pause temporarily, use PATCH with `is_active: false`."""
     deleted = await repo.delete(source_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Source not found")

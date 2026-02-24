@@ -1,36 +1,17 @@
-"""
-app/schemas/ai_provider_schema.py — AI Provider API Schemas
-============================================================
-Pydantic schemas for the /ai-providers API endpoints.
-
-Three schemas:
-  - AIProviderCreate:           POST body when registering a new provider
-  - AIProviderResponse:         GET response (api_key intentionally excluded)
-  - AIProviderActivateResponse: Response after PATCH /{id}/activate
-"""
-
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-# Import constants from the model — single source of truth for valid values
 from app.models.ai_provider import PROVIDER_DEFAULT_MODELS, SUPPORTED_PROVIDERS
 
-# Literal type restricts the `provider` field to exactly these string values.
-# Pydantic will reject any other string at the API layer with a clear error message.
-# Architecture decision: Using Literal here (not just str) gives the Swagger UI
-# a dropdown of valid choices and gives developers a clear error if they typo.
 _PROVIDER_LITERAL = Literal[
     "anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "custom"
 ]
 
 
 class AIProviderCreate(BaseModel):
-    """Request body for POST /ai-providers/ — registers a new AI provider config.
-
-    After creating, call **PATCH /ai-providers/{id}/activate** to make it active.
-    """
+    """After creating, call `PATCH /ai-providers/{id}/activate` to make it live."""
     name: str = Field(..., description="Friendly label, e.g. 'My Gemini Flash'", examples=["My Gemini Flash"])
 
     provider: _PROVIDER_LITERAL = Field(
@@ -145,25 +126,17 @@ class AIProviderCreate(BaseModel):
 
 
 class AIProviderResponse(BaseModel):
-    """Response body for GET /ai-providers/ — never exposes the API key.
-
-    Architecture decision: api_key is intentionally NOT included here.
-    Once stored, the key can never be retrieved via the API — only used internally.
-    If the user needs to change the key, they delete and recreate the config.
-    """
     id: int
     name: str
     provider: str
     model: str
-    # api_key field is deliberately ABSENT — never expose credentials in API responses
     base_url: str | None
-    is_active: bool             # True = this provider is currently active
+    is_active: bool
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
 class AIProviderActivateResponse(BaseModel):
-    """Response body for PATCH /ai-providers/{id}/activate."""
-    activated_id: int           # The ID of the provider that is now active
-    message: str                # Human-readable confirmation message
+    activated_id: int
+    message: str

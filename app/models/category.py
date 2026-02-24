@@ -26,7 +26,6 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 
 if TYPE_CHECKING:
-    from app.models.filter_article import FilterArticle
     from app.models.post_processed_article import PostProcessedArticle
 
 
@@ -97,9 +96,6 @@ class MasterSubCategory(Base):
     # --- Relationships ---
     category: Mapped["MasterCategory"] = relationship(
         "MasterCategory", back_populates="sub_categories"
-    )
-    filter_articles: Mapped[list["FilterArticle"]] = relationship(  # noqa: F821
-        "FilterArticle", back_populates="sub_category"
     )
     post_processed_articles: Mapped[list["PostProcessedArticle"]] = relationship(  # noqa: F821
         "PostProcessedArticle", back_populates="sub_category"

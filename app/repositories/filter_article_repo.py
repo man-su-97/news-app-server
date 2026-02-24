@@ -64,11 +64,12 @@ class FilterArticleRepository:
                 "image_url": a.get("image_url"),
                 "main_url": a["url"],
                 "published_at": a.get("published_at"),
-                # Legacy single FK — kept for backward compat, None until cleanup migration
-                "sub_category_id": None,
                 # Multi-label JSONB array of master_sub_category IDs, e.g. [1, 3]
                 # Populated by CategoryResolver.resolve_all() in IngestionService
                 "sub_category_ids": a.get("sub_category_ids") or [],
+                # Parent master_category IDs derived from sub_category_ids, e.g. [1, 2]
+                # Populated by CategoryResolver.resolve_categories_from_ids()
+                "category_ids": a.get("category_ids") or [],
                 # State FK resolved from AI location string by LocationResolver
                 "location_state_id": a.get("location_state_id"),
             }
@@ -84,6 +85,7 @@ class FilterArticleRepository:
                 image_url=stmt.excluded.image_url,
                 published_at=stmt.excluded.published_at,
                 sub_category_ids=stmt.excluded.sub_category_ids,
+                category_ids=stmt.excluded.category_ids,
                 location_state_id=stmt.excluded.location_state_id,
                 # raw_ingestion_id intentionally not updated — preserve first link
             ),
