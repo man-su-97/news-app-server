@@ -32,7 +32,7 @@ from app.models.base import Base
 
 if TYPE_CHECKING:
     from app.models.raw_event import RawIngestion
-    from app.models.category import MasterSubCategory
+    from app.models.category import MasterSubCategory, MasterCategory
     from app.models.location import State
     from app.models.post_processed_article import PostProcessedArticle
 
@@ -80,11 +80,11 @@ class FilterArticle(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
 
-    # Crime sub-category assigned by the AI filter (legacy single-FK).
-    # Kept for backward compatibility; new code writes sub_category_ids instead.
+    # Crime master-category assigned by the AI filter (legacy single-FK).
+    # Kept for backward compatibility; new code writes master_category_ids instead.
     # Will be dropped in a future cleanup migration.
-    sub_category_id: Mapped[int | None] = mapped_column(
-        ForeignKey("master_sub_category.id", ondelete="SET NULL"),
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("master_category.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -109,8 +109,8 @@ class FilterArticle(Base):
     raw_ingestion: Mapped["RawIngestion | None"] = relationship(  # noqa: F821
         "RawIngestion", back_populates="filter_article"
     )
-    sub_category: Mapped["MasterSubCategory | None"] = relationship(  # noqa: F821
-        "MasterSubCategory", back_populates="filter_articles"
+    category: Mapped["MasterCategory | None"] = relationship(  # noqa: F821
+        "MasterCategory", back_populates="filter_articles"
     )
     location_state: Mapped["State | None"] = relationship(  # noqa: F821
         "State", foreign_keys=[location_state_id]

@@ -58,6 +58,9 @@ class MasterCategory(Base):
     sub_categories: Mapped[list["MasterSubCategory"]] = relationship(
         "MasterSubCategory", back_populates="category", passive_deletes=True
     )
+    filter_articles: Mapped[list["FilterArticle"]] = relationship(
+        "FilterArticle", back_populates="category"
+    )
 
 
 class MasterSubCategory(Base):
@@ -98,9 +101,9 @@ class MasterSubCategory(Base):
     category: Mapped["MasterCategory"] = relationship(
         "MasterCategory", back_populates="sub_categories"
     )
-    filter_articles: Mapped[list["FilterArticle"]] = relationship(  # noqa: F821
-        "FilterArticle", back_populates="sub_category"
-    )
+    # filter_articles: Mapped[list["FilterArticle"]] = relationship(  # noqa: F821
+    #     "FilterArticle", back_populates="sub_category"
+    # )
     post_processed_articles: Mapped[list["PostProcessedArticle"]] = relationship(  # noqa: F821
         "PostProcessedArticle", back_populates="sub_category"
     )
