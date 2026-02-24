@@ -29,6 +29,7 @@ from app.services.normalization.providers.base import AIProvider
 # Import all concrete provider implementations
 from app.services.normalization.providers.anthropic_prov import AnthropicProvider
 from app.services.normalization.providers.gemini_langgraph_prov import GeminiLangGraphProvider
+from app.services.normalization.providers.gemini_multimodal_prov import GeminiMultimodalLangGraphProvider
 from app.services.normalization.providers.openai_prov import OpenAICompatibleProvider
 
 logger = logging.getLogger(__name__)
@@ -75,12 +76,26 @@ def create_gemini_from_env(api_key: str, model: str) -> AIProvider:
     """Build a GeminiLangGraphProvider from env-var credentials.
 
     Cache key uses "env:gemini_langgraph" prefix.
-    Called by ai_processor.get_env_fallback_provider() when GEMINI_API_KEY is set.
-    This is the PREFERRED path for this crime news app.
+    Kept for backward compatibility — new code should prefer create_gemini_multimodal_from_env.
     """
     cache_key = ("env:gemini_langgraph", model, api_key)
     if cache_key not in _provider_cache:
         _provider_cache[cache_key] = GeminiLangGraphProvider(api_key=api_key, model=model)
+    return _provider_cache[cache_key]
+
+
+def create_gemini_multimodal_from_env(api_key: str, model: str) -> AIProvider:
+    """Build a GeminiMultimodalLangGraphProvider from env-var credentials.
+
+    This is the RECOMMENDED env-var path for this crime news app.
+    Provides: multimodal image processing, structured output, multi-label
+    classification, concurrent news search, and proper post-processing.
+    """
+    cache_key = ("env:gemini_multimodal", model, api_key)
+    if cache_key not in _provider_cache:
+        _provider_cache[cache_key] = GeminiMultimodalLangGraphProvider(
+            api_key=api_key, model=model
+        )
     return _provider_cache[cache_key]
 
 
@@ -111,9 +126,14 @@ def _build(config: AIProviderConfig) -> AIProvider:
         return AnthropicProvider(api_key=api_key, model=model)
 
     if provider == "gemini_langgraph":
-        # LangGraph + Gemini — uses langchain-google-genai natively.
-        # No base_url needed — the library handles auth internally.
+        # Original LangGraph provider: search_node → process_node (single combined call).
         return GeminiLangGraphProvider(api_key=api_key, model=model)
+
+    if provider == "gemini_multimodal":
+        # Enhanced multimodal LangGraph provider — RECOMMENDED.
+        # Two separate graphs: filter (extract→search→classify) and post-process (search→rewrite+rank).
+        # Supports image-in-message for crime scene classification.
+        return GeminiMultimodalLangGraphProvider(api_key=api_key, model=model)
 
     if provider in ("openai", "gemini", "custom"):
         # OpenAI-compatible endpoint — works for OpenAI, Gemini (via OpenAI format),

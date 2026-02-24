@@ -30,7 +30,7 @@ from app.models.base import Base
 
 # Set of valid provider strings — validated in the API schema layer.
 # Adding a new provider here is step 1; also update provider_factory.py.
-SUPPORTED_PROVIDERS = {"anthropic", "openai", "gemini", "gemini_langgraph", "custom"}
+SUPPORTED_PROVIDERS = {"anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "custom"}
 
 # Default base URLs for each provider.
 # The user can override these when creating a config, but these are the defaults.
@@ -38,20 +38,22 @@ SUPPORTED_PROVIDERS = {"anthropic", "openai", "gemini", "gemini_langgraph", "cus
 # "gemini" needs an explicit URL because we use the OpenAI-compatible endpoint.
 # "gemini_langgraph" uses None because langchain-google-genai handles auth natively.
 PROVIDER_BASE_URLS: dict[str, str | None] = {
-    "anthropic": None,          # Anthropic SDK handles base URL internally
-    "openai": None,             # OpenAI SDK uses api.openai.com/v1 by default
+    "anthropic": None,           # Anthropic SDK handles base URL internally
+    "openai": None,              # OpenAI SDK uses api.openai.com/v1 by default
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
-    "gemini_langgraph": None,   # langchain-google-genai uses google-auth natively
-    "custom": None,             # User MUST supply this (validated in schema)
+    "gemini_langgraph": None,    # langchain-google-genai uses google-auth natively
+    "gemini_multimodal": None,   # same — langchain-google-genai handles auth natively
+    "custom": None,              # User MUST supply this (validated in schema)
 }
 
 # Suggested model IDs shown in documentation and error messages.
 # These are sensible defaults — users can override with any model their provider supports.
 PROVIDER_DEFAULT_MODELS: dict[str, str] = {
-    "anthropic": "claude-haiku-4-5-20251001",   # Fast and cheap Claude model
+    "anthropic": "claude-haiku-4-5-20251001",    # Fast and cheap Claude model
     "openai": "gpt-4o-mini",                     # Fast and cheap GPT model
     "gemini": "gemini-2.0-flash",                # Fast Gemini model
-    "gemini_langgraph": "gemini-2.0-flash",      # Same — LangGraph uses this model
+    "gemini_langgraph": "gemini-2.0-flash",      # LangGraph + DuckDuckGo search
+    "gemini_multimodal": "gemini-2.0-flash",     # Multimodal + structured output (RECOMMENDED)
     "custom": "your-model-name",                 # Placeholder for user to fill in
 }
 

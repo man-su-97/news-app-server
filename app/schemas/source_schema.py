@@ -13,24 +13,52 @@ should always start active — the API sets this automatically.
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SourceCreate(BaseModel):
-    """Request body for POST /sources/ — creates a new news source.
+    """Request body for POST /sources/ — creates a new news source."""
+    name: str = Field(..., description="Human-readable label for this source", examples=["India News Crime RSS"])
+    type: str = Field(..., description="Feed type: 'rss' for RSS/Atom feeds, 'rest' for JSON APIs", examples=["rss"])
+    url: str = Field(..., description="Feed URL to fetch articles from", examples=["https://timesofindia.indiatimes.com/rssfeeds/7503091.cms"])
+    config: dict | None = Field(
+        default=None,
+        description="Optional extra config. For REST sources with auth: {\"headers\": {\"Authorization\": \"Bearer TOKEN\"}}",
+        examples=[None],
+    )
 
-    The client provides these fields in JSON:
-    {
-        "name": "Times of India Crime",
-        "type": "rss",
-        "url": "https://timesofindia.indiatimes.com/rss.cms",
-        "config": null
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "RSS feed",
+                    "value": {
+                        "name": "Times of India Crime",
+                        "type": "rss",
+                        "url": "https://timesofindia.indiatimes.com/rssfeeds/7503091.cms",
+                        "config": None,
+                    },
+                },
+                {
+                    "summary": "REST API with auth header",
+                    "value": {
+                        "name": "NewsAPI Crime",
+                        "type": "rest",
+                        "url": "https://newsapi.org/v2/top-headlines?category=crime",
+                        "config": {"headers": {"Authorization": "Bearer YOUR_API_KEY"}},
+                    },
+                },
+            ]
+        }
     }
-    """
-    name: str               # Human-readable label for this source
-    type: str               # "rss" or "rest" — determines which fetcher is used
-    url: str                # Feed URL to fetch from
-    config: dict | None = None  # Optional extra config (e.g. {"headers": {"Authorization": "Bearer ..."}})
+
+
+class SourceUpdate(BaseModel):
+    """Request body for PATCH /sources/{id} — all fields optional (partial update)."""
+    name: str | None = Field(default=None, description="New display name for this source")
+    url: str | None = Field(default=None, description="New feed URL")
+    is_active: bool | None = Field(default=None, description="Set false to pause fetching without deleting")
+    config: dict | None = Field(default=None, description="Updated config (headers, etc.)")
 
 
 class SourceResponse(BaseModel):

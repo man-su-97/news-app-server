@@ -45,6 +45,33 @@ class Settings(BaseSettings):
     # This is the recommended default for this crime news app.
     GEMINI_API_KEY: str | None = None
 
+    # Maximum AI API calls per minute across the entire ingestion batch.
+    # This is enforced by a single PROCESS-LEVEL rate limiter shared by all
+    # concurrent sources and both pipeline stages (filter + post-process).
+    #
+    # Free tier defaults (set in .env to match your plan):
+    #   gemini-2.5-flash       →  5 RPM  (default — 2 calls/article × 2 sources = tight)
+    #   gemini-2.0-flash       → 15 RPM
+    #   gemini-2.0-flash-lite  → 30 RPM
+    #   anthropic claude-haiku →  5 RPM
+    #   openai gpt-4o-mini     → 500 RPM
+    #
+    # Rule of thumb for free tier:
+    #   Each article uses 2 API calls (stage 1 filter + stage 2 post-process).
+    #   At RPM=5 that's ~2.5 articles/min = 150 articles/hr.
+    #   Keep RPM ≤ (free_tier_rpm / num_active_sources) to avoid 429s.
+    #
+    # Paid plans: set to 0 for unlimited (no artificial delay added).
+    AI_REQUESTS_PER_MINUTE: int = 5
+
+    # Retry settings for transient AI API errors (HTTP 429, quota exhausted).
+    # On rate limit errors the pipeline retries with exponential backoff:
+    #   attempt 1 → wait AI_RETRY_DELAY_SECONDS
+    #   attempt 2 → wait AI_RETRY_DELAY_SECONDS × 2
+    # After AI_RETRY_ATTEMPTS the article is marked failed (not dropped silently).
+    AI_RETRY_ATTEMPTS: int = 3
+    AI_RETRY_DELAY_SECONDS: float = 15.0
+
     # Tell pydantic-settings where to find the .env file.
     # env_file_encoding ensures proper reading of special characters in API keys.
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

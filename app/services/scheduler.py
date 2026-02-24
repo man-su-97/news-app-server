@@ -1,67 +1,61 @@
 """
 app/services/scheduler.py — Background Job Scheduler
 =====================================================
-Runs the ingestion pipeline automatically every 5 minutes.
+Runs the full pipeline automatically every 5 minutes.
 
-Without this, news would only be fetched when someone manually calls POST /ingest/.
-The scheduler makes the app autonomous: add a source once, and new articles
-appear automatically without any human action.
+Two scheduled jobs:
+  1. ingestion_all_sources — fetch + AI filter + AI post-process for every active source
+  2. publish_final_feed    — select top-ranked articles and upsert into final_articles
+                             (runs 30 seconds after ingestion completes, every 5 minutes)
 
 Architecture:
   - APScheduler (AsyncIOScheduler) integrates with Python's asyncio event loop.
-    This means scheduled jobs run in the same async context as the web server —
-    no separate process or thread needed.
   - Each source gets its OWN database session to avoid one slow source blocking others.
-  - asyncio.gather() runs all sources CONCURRENTLY (not sequentially), so
-    fetching 10 sources takes as long as the SLOWEST single source (not 10x longer).
-  - max_instances=1 prevents job pile-up: if the previous run is still in progress
-    when the next trigger fires, the new trigger is skipped.
+  - asyncio.gather() runs all sources CONCURRENTLY — fetching N sources takes as long
+    as the SLOWEST single source (not N× longer).
+  - max_instances=1 prevents job pile-up if a previous run is still in progress.
 
 Scheduler lifecycle:
-  - start_scheduler() is called in app/main.py's lifespan startup hook
-  - stop_scheduler() is called in the lifespan shutdown hook
+  - start_scheduler() called in app/main.py lifespan startup hook
+  - stop_scheduler() called in the lifespan shutdown hook
 """
 
-import asyncio   # For asyncio.gather() — concurrent execution of multiple coroutines
+import asyncio
 import logging
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler  # APScheduler async variant
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.core.database import AsyncSessionLocal      # DB session factory
-from app.repositories.article_repo import ArticleRepository
+from app.core.database import AsyncSessionLocal
+from app.repositories.ai_provider_repo import AIProviderRepository
+from app.repositories.filter_article_repo import FilterArticleRepository
+from app.repositories.final_article_repo import FinalArticleRepository
+from app.repositories.post_processed_article_repo import PostProcessedArticleRepository
 from app.repositories.raw_ingestion_repo import RawIngestionRepository
 from app.repositories.source_repo import SourceRepository
 from app.services.ingestion_service import IngestionService
+from app.services.publishing_service import PublishingService
 
 logger = logging.getLogger(__name__)
 
-# Create the scheduler instance.
-# timezone="UTC" ensures all job execution times are unambiguous.
-# Without timezone, APScheduler uses local timezone which varies by server.
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 async def run_ingestion_for_all_active_sources() -> None:
     """Fetch and process every active source concurrently.
 
-    This is the main scheduled job — runs every 5 minutes.
+    Full pipeline per source:
+      Fetch raw items → store raw_ingestion → AI stage 1 (filter + classify)
+      → store filter_articles → AI stage 2 (rewrite + score) → store post_processed_articles
 
     Session strategy:
-      Step 1: Open ONE session to load the list of active sources, then CLOSE it.
-      Step 2: For each source, open a SEPARATE session for its ingestion.
-      Why? If we kept one session open for all sources:
-        - A slow source would hold the session open for the full duration
-        - SQLAlchemy sessions aren't meant to be long-lived
-        - An error in one source's transaction could affect others
+      Step 1: ONE session to load the source list, then close it.
+      Step 2: Per-source SEPARATE session for full ingestion.
+      Why separate? Isolates DB transactions and avoids long-lived sessions.
     """
     logger.info("Scheduled ingestion run starting")
 
-    # Step 1: Load source list in a short-lived session, then close it
     async with AsyncSessionLocal() as db:
         sources = await SourceRepository(db).get_all(active_only=True)
-    # The session is now closed — source objects are "detached" from the session.
-    # expire_on_commit=False (set in database.py) means their column data stays
-    # cached in memory, so we can still access source.id, source.url, etc.
 
     if not sources:
         logger.info("No active sources configured — skipping run")
@@ -69,19 +63,12 @@ async def run_ingestion_for_all_active_sources() -> None:
 
     logger.info("Ingesting %d active source(s)", len(sources))
 
-    # Step 2: Ingest all sources CONCURRENTLY.
-    # Each source runs in its own separate coroutine (_ingest_one_source).
-    # asyncio.gather() starts all of them simultaneously.
-    # return_exceptions=True: if one source fails, others continue running.
-    # Without return_exceptions=True, ONE failure would cancel all other running tasks.
     tasks = [_ingest_one_source(source) for source in sources]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Count successes vs failures for the log summary
-    ok = sum(1 for r in results if isinstance(r, int))           # int = article count = success
-    failed = sum(1 for r in results if isinstance(r, Exception)) # Exception = failure
+    ok = sum(1 for r in results if isinstance(r, int))
+    failed = sum(1 for r in results if isinstance(r, Exception))
 
-    # Log which sources specifically failed
     for source, result in zip(sources, results):
         if isinstance(result, Exception):
             logger.error(
@@ -90,36 +77,25 @@ async def run_ingestion_for_all_active_sources() -> None:
             )
 
     logger.info(
-        "Scheduled ingestion run complete: %d sources OK, %d failed", ok, failed
+        "Scheduled ingestion complete: %d sources OK, %d failed", ok, failed
     )
 
 
 async def _ingest_one_source(source) -> int:
     """Run the full ingestion pipeline for ONE source in its own DB session.
 
-    Opens a dedicated session for this source, runs the full pipeline
-    (fetch → normalize → enrich → upsert), logs the result, and returns
-    the count of articles written.
-
-    Architecture decision: using "async with AsyncSessionLocal()" creates
-    a brand new connection pool checkout for each source. This isolates
-    database transactions per source — an error in source A's transaction
-    doesn't affect source B's transaction.
-
-    Note: The scheduler (_ingest_one_source) doesn't pass ai_provider_repo
-    because it creates a fresh IngestionService. IngestionService._load_ai_provider()
-    will check the DB config first, then fall back to env vars.
+    Opens a dedicated session, creates the full IngestionService with all
+    required repositories (raw, filter, post-processed, AI provider), runs
+    the pipeline, and returns the count of post_processed_articles written.
     """
     async with AsyncSessionLocal() as db:
-        # Create a fresh IngestionService with this session's repos
         svc = IngestionService(
             source_repo=SourceRepository(db),
-            article_repo=ArticleRepository(db),
             raw_repo=RawIngestionRepository(db),
-            # Note: ai_provider_repo is not passed here — IngestionService
-            # will use get_env_fallback_provider() for the AI provider.
-            # To use DB-configured providers in scheduled jobs, pass
-            # ai_provider_repo=AIProviderRepository(db) here.
+            filter_article_repo=FilterArticleRepository(db),
+            post_processed_repo=PostProcessedArticleRepository(db),
+            ai_provider_repo=AIProviderRepository(db),
+            db=db,   # needed for CategoryResolver + LocationResolver queries
         )
         count = await svc.ingest(source)
         logger.info(
@@ -129,38 +105,61 @@ async def _ingest_one_source(source) -> int:
         return count
 
 
+async def run_publishing() -> None:
+    """Compute rank_scores and upsert the top 20 articles into final_articles.
+
+    Called 30 seconds after ingestion (via separate job) so that fresh
+    post_processed_articles are available for ranking.
+
+    PublishingService:
+      1. Loads top 20 post_processed_articles by imp_score (non-null only)
+      2. Applies time-decay to compute rank_score for each
+      3. Upserts into final_articles — the public news feed table
+    """
+    logger.info("Scheduled publishing run starting")
+    async with AsyncSessionLocal() as db:
+        svc = PublishingService(
+            post_processed_repo=PostProcessedArticleRepository(db),
+            final_article_repo=FinalArticleRepository(db),
+        )
+        count = await svc.publish(top_n=20)
+    logger.info("Scheduled publishing complete: %d final_articles rows written", count)
+
+
 def start_scheduler() -> None:
-    """Register the ingestion job and start the scheduler.
+    """Register ingestion + publishing jobs and start the scheduler.
 
-    Called once when the FastAPI application starts (in main.py lifespan).
+    Job 1 (ingestion_all_sources): every 5 minutes, max 1 concurrent instance.
+    Job 2 (publish_final_feed):    every 5 minutes, offset 30s from ingestion,
+                                    max 1 concurrent instance.
 
-    Job configuration:
-      trigger="interval": run on a fixed time interval
-      minutes=5: every 5 minutes
-      id="ingestion_all_sources": unique job ID (allows replace_existing to work)
-      replace_existing=True: if this job already exists (e.g. hot reload), replace it
-      max_instances=1: only ONE instance of this job runs at a time.
-        Without this, if the 5-minute job takes 6 minutes, two instances
-        would run simultaneously — causing duplicate writes and DB contention.
+    The 30-second offset gives ingestion time to write post_processed_articles
+    before publishing tries to read them.
     """
     scheduler.add_job(
-        run_ingestion_for_all_active_sources,   # the function to call
+        run_ingestion_for_all_active_sources,
         trigger="interval",
         minutes=5,
         id="ingestion_all_sources",
         replace_existing=True,
-        max_instances=1,    # prevents pile-up if a run takes longer than 5 minutes
+        max_instances=1,
+    )
+    scheduler.add_job(
+        run_publishing,
+        trigger="interval",
+        minutes=5,
+        seconds=30,   # 30-second lag so ingestion finishes writing first
+        id="publish_final_feed",
+        replace_existing=True,
+        max_instances=1,
     )
     scheduler.start()
-    logger.info("Scheduler started — ingestion every 5 minutes")
+    logger.info(
+        "Scheduler started — ingestion every 5min, publishing every 5min (+30s offset)"
+    )
 
 
 def stop_scheduler() -> None:
-    """Stop the scheduler gracefully.
-
-    Called when the FastAPI application shuts down (in main.py lifespan).
-    wait=False: don't wait for currently running jobs to finish before stopping.
-    This prevents a long-running ingestion job from delaying server shutdown.
-    """
+    """Stop the scheduler gracefully on server shutdown."""
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")

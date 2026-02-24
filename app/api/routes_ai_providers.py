@@ -35,7 +35,7 @@ from app.schemas.ai_provider_schema import (
 router = APIRouter()
 
 
-@router.post("/", response_model=AIProviderResponse, status_code=201)
+@router.post("/", response_model=AIProviderResponse, status_code=201, summary="Register a new AI provider config")
 async def create_ai_provider(
     payload: AIProviderCreate,
     repo: AIProviderRepository = Depends(get_ai_provider_repo),
@@ -56,7 +56,7 @@ async def create_ai_provider(
     return await repo.create(payload)
 
 
-@router.get("/", response_model=list[AIProviderResponse])
+@router.get("/", response_model=list[AIProviderResponse], summary="List all AI provider configs")
 async def list_ai_providers(
     repo: AIProviderRepository = Depends(get_ai_provider_repo),
 ):
@@ -68,7 +68,7 @@ async def list_ai_providers(
     return await repo.get_all()
 
 
-@router.get("/active", response_model=AIProviderResponse | None)
+@router.get("/active", response_model=AIProviderResponse | None, summary="Get the currently active AI provider")
 async def get_active_provider(
     repo: AIProviderRepository = Depends(get_ai_provider_repo),
 ):
@@ -86,7 +86,7 @@ async def get_active_provider(
     return await repo.get_active()
 
 
-@router.get("/{provider_id}", response_model=AIProviderResponse)
+@router.get("/{provider_id}", response_model=AIProviderResponse, summary="Get AI provider config by ID")
 async def get_ai_provider(
     provider_id: int,
     repo: AIProviderRepository = Depends(get_ai_provider_repo),
@@ -98,7 +98,7 @@ async def get_ai_provider(
     return config
 
 
-@router.patch("/{provider_id}/activate", response_model=AIProviderActivateResponse)
+@router.patch("/{provider_id}/activate", response_model=AIProviderActivateResponse, summary="Set provider as active")
 async def activate_ai_provider(
     provider_id: int,
     repo: AIProviderRepository = Depends(get_ai_provider_repo),
@@ -121,7 +121,7 @@ async def activate_ai_provider(
     )
 
 
-@router.delete("/active", status_code=204)
+@router.delete("/active", status_code=204, summary="Deactivate all AI providers")
 async def deactivate_all_providers(
     repo: AIProviderRepository = Depends(get_ai_provider_repo),
 ):
@@ -133,7 +133,7 @@ async def deactivate_all_providers(
     await repo.deactivate_all()
 
 
-@router.delete("/{provider_id}", status_code=204)
+@router.delete("/{provider_id}", status_code=204, summary="Delete an AI provider config")
 async def delete_ai_provider(
     provider_id: int,
     repo: AIProviderRepository = Depends(get_ai_provider_repo),

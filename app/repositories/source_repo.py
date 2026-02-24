@@ -10,11 +10,11 @@ This repo is used by:
   - ingestion_service.py: not used directly, but scheduler passes Source objects
 """
 
-from sqlalchemy import select                           # For building SELECT queries
-from sqlalchemy.ext.asyncio import AsyncSession        # Async DB session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.source import Source                   # ORM model
-from app.schemas.source_schema import SourceCreate     # Pydantic schema for creation input
+from app.models.source import Source
+from app.schemas.source_schema import SourceCreate, SourceUpdate
 
 
 class SourceRepository:
@@ -37,6 +37,26 @@ class SourceRepository:
         await self.db.refresh(source)         # Reload from DB to get auto-set fields
         # (refresh populates id, created_at which are set by the DB, not Python)
         return source
+
+    async def update(self, source_id: int, data: "SourceUpdate") -> Source | None:
+        """Apply partial updates to a source. Returns updated source or None if not found."""
+        source = await self.get_by_id(source_id)
+        if source is None:
+            return None
+        for field, value in data.model_dump(exclude_unset=True).items():
+            setattr(source, field, value)
+        await self.db.commit()
+        await self.db.refresh(source)
+        return source
+
+    async def delete(self, source_id: int) -> bool:
+        """Delete a source by ID. Returns True if deleted, False if not found."""
+        source = await self.get_by_id(source_id)
+        if source is None:
+            return False
+        await self.db.delete(source)
+        await self.db.commit()
+        return True
 
     async def get_all(self, active_only: bool = True) -> list[Source]:
         """Fetch all sources, optionally filtering to only active ones.

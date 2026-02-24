@@ -3,36 +3,37 @@ app/services/normalization/providers/gemini_langgraph_prov.py — Gemini + LangG
 =============================================================================================
 The RECOMMENDED provider for this crime news application.
 
-Two-phase AI processing:
+Single-pass processing with web search context:
 
-Phase 1 — normalize() — fast direct Gemini call:
-  Input: raw RSS/REST payload
-  Output: title, url, description, image_url, published_at
-  No tools, no search — just extraction. Takes ~1-2 seconds.
+  process() — LangGraph agent:
+    Step 1 (search_node): DuckDuckGo searches for "{article_title} crime news"
+    Step 2 (process_node): Gemini receives raw_payload + search results → outputs ALL fields:
+      title, url, description, image_url, published_at,
+      is_crime, category, sub_category, location, region, summary, importance_score
 
-Phase 2 — enrich() — LangGraph agent with DuckDuckGo search:
-  Input: normalized article (title + description + url)
-  Step 1 (search_node): DuckDuckGo searches for "{title} crime news"
-  Step 2 (enrich_node): Gemini reads article + search results → outputs:
-    is_crime, category, sub_category, location, region, summary, importance_score
-  Total: ~3-5 seconds per article.
+  Total: ~2-4 seconds per article (one search + one AI call).
 
-Why LangGraph for enrichment (not a plain API call)?
-  DuckDuckGo search gives the AI real-world context:
+Why LangGraph?
+  DuckDuckGo search gives the AI real-world context BEFORE processing:
     - How widely covered is this story? → better importance_score calibration
     - Related coverage confirms location and crime type
-    - AI has factual grounding instead of just guessing from 1-2 sentences
+    - AI has factual grounding instead of guessing from raw text alone
 
 Why DuckDuckGo (not Google/Bing/Tavily)?
   - Completely free, no API key required
   - Good enough for news queries
   - Reduces operational dependencies
 
+Why a single process() call (not separate normalize + enrich)?
+  - Halves the number of API calls → halves cost and latency
+  - The AI sees the raw payload directly, not an intermediate normalized form
+  - Simpler code path — one graph, one method
+
 LangGraph graph structure:
-  START → search_node → enrich_node → END
+  START → search_node → process_node → END
 
   Each "node" is an async function that:
-    1. Reads relevant fields from the shared state dict
+    1. Reads relevant fields from the shared _ProcessState dict
     2. Does its work (HTTP call or AI call)
     3. Returns a dict with ONLY the state keys it wants to update
 
@@ -50,199 +51,234 @@ from langgraph.graph import END, START, StateGraph  # Graph builder components
 
 from app.services.normalization.providers.base import (
     AIProvider,
-    ENRICHMENT_SYSTEM_PROMPT,
-    NORMALIZATION_SYSTEM_PROMPT,
-    _NULL_ENRICHMENT,
-    build_enrichment_message,
-    build_user_message,
-    parse_enrichment_output,
-    parse_llm_output,
+    COMBINED_PROCESS_PROMPT,
+    POST_PROCESS_PROMPT,
+    build_post_process_message,
+    build_process_message,
+    parse_combined_output,
+    parse_post_process_output,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class _EnrichState(TypedDict):
+class _ProcessState(TypedDict):
     """The shared state object passed between LangGraph nodes.
 
     TypedDict gives us type safety — each node knows exactly what keys exist.
-    LangGraph passes this dict through the graph, with each node adding/updating fields.
+    LangGraph passes this dict through the graph; each node returns a partial dict
+    with only the keys it updated (LangGraph merges these updates into the state).
 
     Fields:
-      article:        the normalized article — read-only, set before graph starts
-      search_context: DuckDuckGo results — written by search_node, read by enrich_node
-      result:         final enrichment dict — written by enrich_node, read after graph ends
+      raw_payload:    the raw RSS/REST item — set before graph starts, read-only
+      source_type:    "rss" or "rest" — helps AI interpret the payload structure
+      search_context: DuckDuckGo search results — written by search_node, read by process_node
+      result:         final complete article dict — written by process_node, read after graph ends
     """
-    article: dict          # Normalized article (title, description, url)
-    search_context: str    # DuckDuckGo search results (may be empty string if search failed)
-    result: dict           # Final enrichment output dict
+    raw_payload: dict       # Raw article data from the fetcher
+    source_type: str        # "rss" or "rest"
+    search_context: str     # DuckDuckGo results (empty string if search failed)
+    result: dict | None     # Final article dict (None if processing failed)
 
 
 class GeminiLangGraphProvider(AIProvider):
-    """Google Gemini for normalization + LangGraph agent for enrichment.
+    """Google Gemini + LangGraph agent for combined article processing.
 
-    The enrichment agent searches the web for context before classifying the article.
-    This gives better importance_score accuracy and more reliable location extraction.
+    The LangGraph agent searches DuckDuckGo BEFORE calling Gemini, giving the
+    AI real-world context for better importance scoring and location extraction.
+    One combined call (not separate normalize + enrich) keeps API costs low.
     """
 
     def __init__(self, api_key: str, model: str = "gemini-2.0-flash") -> None:
         self._model = model
 
-        # Create the Gemini LLM via langchain-google-genai.
+        # ChatGoogleGenerativeAI: native Gemini integration via langchain-google-genai.
         # temperature=0: deterministic output — same input → same output every time.
-        # This is correct for a structured extraction task (we don't want creativity).
+        # This is correct for structured extraction (we don't want creative variation).
         self._llm = ChatGoogleGenerativeAI(
             model=model,
             google_api_key=api_key,   # Gemini API key from Google AI Studio or GCP
             temperature=0,            # No randomness — consistent, reliable output
         )
 
-        # DuckDuckGo search tool — no API key needed.
-        # max_results=3: 3 search results is enough to calibrate importance_score.
+        # DuckDuckGo search tool — no API key needed, completely free.
+        # max_results=3: 3 search results is sufficient to calibrate importance_score.
         # More results = better accuracy but more tokens = slower + more expensive.
         self._search = DuckDuckGoSearchResults(max_results=3)
 
-        # Build and compile the LangGraph enrichment graph (done once at construction).
-        # Compilation locks in the graph structure — can't add nodes after this.
+        # Build and compile the LangGraph processing graph (done once at construction).
+        # Compilation locks in the graph structure — nodes/edges can't change after this.
         self._graph = self._build_graph()
 
     @property
     def model_id(self) -> str:
-        """Identifier stored in raw_ingestion_events for audit trail."""
+        """Identifier stored in raw_ingestion_events for audit trail.
+        Example: "ai:gemini_langgraph:gemini-2.0-flash"
+        """
         return f"ai:gemini_langgraph:{self._model}"
 
     # ------------------------------------------------------------------
     # AIProvider interface implementation
     # ------------------------------------------------------------------
 
-    async def normalize(self, raw_payload: dict, source_type: str) -> dict | None:
-        """Direct Gemini call to extract canonical fields from a raw payload.
+    async def process(self, raw_payload: dict, source_type: str) -> dict | None:
+        """Run the LangGraph graph: search_node → process_node.
 
-        No tools, no graph — just a single LLM call.
-        Uses langchain-google-genai's ainvoke() for async execution.
-        Messages are passed as a list of Message objects (HumanMessage, SystemMessage).
+        Invokes the pre-built graph with the raw payload as input.
+        The graph searches DuckDuckGo, then sends raw data + search context to Gemini.
+        Returns the complete article dict or None if the graph fails.
 
-        Returns the canonical article dict or None on failure.
-        """
-        user_message = build_user_message(raw_payload, source_type)
-        try:
-            # ainvoke() sends messages to Gemini and returns an AIMessage object
-            response = await self._llm.ainvoke([
-                SystemMessage(content=NORMALIZATION_SYSTEM_PROMPT),  # instructions
-                HumanMessage(content=user_message),                   # the data to process
-            ])
-            # response.content is the text of the AI's response
-            text = str(response.content)
-        except Exception as exc:
-            logger.error("Gemini normalize error: %s", exc)
-            return None
-
-        # parse_llm_output handles JSON parsing + Pydantic validation
-        return parse_llm_output(text, raw_payload)
-
-    async def enrich(self, article: dict) -> dict:
-        """Run the LangGraph enrichment graph: search → enrich.
-
-        Invokes the pre-built graph with the article as input.
-        The graph runs search_node then enrich_node and returns the final state.
-
-        Returns the enrichment dict or _NULL_ENRICHMENT if the graph fails.
         The outer try/except is a final safety net — any unexpected error
-        still results in a safe fallback (never drops the article).
+        (graph compilation issues, unexpected state shape, etc.) returns None
+        safely, which causes IngestionService to drop this article.
         """
         try:
-            # ainvoke() runs the graph asynchronously and returns the final state
+            # ainvoke() runs the graph asynchronously and returns the FINAL state dict
             final_state = await self._graph.ainvoke({
-                "article": article,
-                "search_context": "",   # will be filled by search_node
-                "result": {},           # will be filled by enrich_node
+                "raw_payload": raw_payload,
+                "source_type": source_type,
+                "search_context": "",   # filled by search_node
+                "result": None,         # filled by process_node
             })
-            # Get the result from final state, fall back to NULL if empty
-            return final_state.get("result") or _NULL_ENRICHMENT
+            # Return the result dict from the final state (None if processing failed)
+            return final_state.get("result")
         except Exception as exc:
-            logger.warning("LangGraph enrichment graph error: %s", exc)
-            return _NULL_ENRICHMENT  # Fail safe — article is still saved
+            logger.warning("LangGraph process graph error: %s", exc)
+            return None  # Fail safe — caller drops this article
 
     # ------------------------------------------------------------------
     # LangGraph graph construction
     # ------------------------------------------------------------------
 
     def _build_graph(self):
-        """Build and compile the two-node enrichment LangGraph.
+        """Build and compile the two-node LangGraph processing graph.
 
         Graph structure:
-          START → search_node → enrich_node → END
+          START → search_node → process_node → END
 
         StateGraph takes the state TypedDict so it knows the shape of the
         data flowing through the graph.
 
-        .compile() returns a runnable graph (like a function that takes state
-        and returns final state). We call this with .ainvoke() in enrich().
+        .compile() returns a runnable graph object. We call this with
+        .ainvoke() in process() to execute the full graph.
         """
-        builder = StateGraph(_EnrichState)
+        builder = StateGraph(_ProcessState)
 
         # Register nodes — each node is an async method on this class.
-        # "search" and "enrich" are just labels used in add_edge() calls.
+        # "search" and "process" are just labels used in add_edge() calls.
         builder.add_node("search", self._search_node)
-        builder.add_node("enrich", self._enrich_node)
+        builder.add_node("process", self._process_node)
 
-        # Define edges — the execution order:
-        # START is a built-in LangGraph constant meaning "the beginning"
-        # END is a built-in constant meaning "graph is done, return state"
-        builder.add_edge(START, "search")    # first: run search
-        builder.add_edge("search", "enrich") # then: run enrich
-        builder.add_edge("enrich", END)      # then: done
+        # Define execution order:
+        # START → search (DuckDuckGo lookup) → process (Gemini call) → END
+        builder.add_edge(START, "search")
+        builder.add_edge("search", "process")
+        builder.add_edge("process", END)
 
-        # Compile locks the graph structure and returns a runnable object
+        # Compile: locks the graph and returns a runnable object
         return builder.compile()
 
-    async def _search_node(self, state: _EnrichState) -> dict:
-        """Node 1: Search DuckDuckGo for context about this article.
+    async def _search_node(self, state: _ProcessState) -> dict:
+        """Node 1: Search DuckDuckGo for context about this raw article.
 
-        Queries: "{title} crime news"
+        Extracts a candidate title from the raw payload using common field names.
+        Queries DuckDuckGo: "{title} crime news"
+
         Returns: {"search_context": "snippet 1... snippet 2... snippet 3..."}
 
-        If the search fails (network error, rate limit, etc.), returns empty string.
-        The next node (enrich) will still work — it just won't have search context.
-        Error handling here is intentionally broad: any search failure is non-fatal.
+        If the search fails (network error, rate limit, DuckDuckGo blocks us),
+        returns an empty string. The next node still processes the article,
+        just without web context. Search failure is NEVER fatal — at worst
+        we get a slightly less accurate importance_score.
         """
-        title = state["article"].get("title", "")
+        raw = state["raw_payload"]
+        # Try common field names where a title/headline might appear in RSS or REST data
+        title = (
+            raw.get("title") or
+            raw.get("headline") or
+            raw.get("name") or
+            raw.get("subject") or
+            ""
+        )
+        # Fallback: use the first 100 chars of the payload as a string
+        if not title:
+            title = str(raw)[:100]
+
         try:
-            # ainvoke() searches DuckDuckGo and returns a string with results
-            # The results typically include title, snippet, and URL for each result
+            # ainvoke() sends the query to DuckDuckGo and returns a formatted string
+            # with results (each result has: title, snippet, URL)
             results = await self._search.ainvoke(f"{title} crime news")
             return {"search_context": str(results)}
         except Exception as exc:
-            # Search failed — log it but don't fail the entire enrichment
+            # Search failed — log it but DO NOT fail the entire ingestion
             logger.warning("DuckDuckGo search failed (non-fatal): %s", exc)
-            return {"search_context": ""}  # Empty context = AI enriches without web data
+            return {"search_context": ""}  # Empty context = AI processes without web data
 
-    async def _enrich_node(self, state: _EnrichState) -> dict:
-        """Node 2: Call Gemini to produce the structured enrichment JSON.
+    async def _process_node(self, state: _ProcessState) -> dict:
+        """Node 2: Call Gemini to extract and classify the article in one shot.
 
-        Receives: article dict + search_context (from search_node)
-        Sends to Gemini: title + description + url + web search results
-        Returns: {"result": {is_crime, category, sub_category, location, region, summary, score}}
+        Receives: raw_payload + search_context (from search_node)
+        Sends to Gemini: source_type + full raw payload + web search results
+        Returns: {"result": complete_article_dict_or_None}
 
-        If Gemini returns non-JSON or invalid schema, parse_enrichment_output()
-        returns _NULL_ENRICHMENT — article is still saved with NULL fields.
+        The AI outputs ALL fields in one response:
+          basic: title, url, description, image_url, published_at
+          enrichment: is_crime, category, sub_category, location, region, summary, score
+
+        If Gemini returns non-JSON or invalid output, parse_combined_output()
+        returns None and the article is dropped (no partial saves).
         """
-        # build_enrichment_message creates a compact JSON payload with optional search context
-        user_message = build_enrichment_message(
-            state["article"],                    # the article to classify
-            state.get("search_context", "")      # context from search_node (may be "")
+        # build_process_message creates the JSON payload the AI will process
+        user_message = build_process_message(
+            state["raw_payload"],                 # the raw article data
+            state["source_type"],                 # "rss" or "rest"
+            state.get("search_context", ""),      # DuckDuckGo results (may be "")
         )
         try:
             response = await self._llm.ainvoke([
-                SystemMessage(content=ENRICHMENT_SYSTEM_PROMPT),  # classification instructions
-                HumanMessage(content=user_message),                # article + search context
+                SystemMessage(content=COMBINED_PROCESS_PROMPT),  # extraction + classification rules
+                HumanMessage(content=user_message),               # raw data + search context
             ])
             text = str(response.content)
-            # Parse and validate the JSON — returns _NULL_ENRICHMENT on parse error
-            result = parse_enrichment_output(text)
+            # parse_combined_output: strips fences, parses JSON, validates, returns dict or None
+            result = parse_combined_output(text, state["raw_payload"])
         except Exception as exc:
-            logger.warning("Gemini enrich node error: %s", exc)
-            result = dict(_NULL_ENRICHMENT)  # dict() creates a copy (don't modify the original)
+            logger.warning("Gemini process node error: %s", exc)
+            result = None
 
         # Return only the state key(s) this node is updating
         return {"result": result}
+
+    # ------------------------------------------------------------------
+    # STAGE 2: Post-processing with optional web search context
+    # ------------------------------------------------------------------
+
+    async def post_process(self, filter_article: dict, search_context: str = "") -> dict | None:
+        """STAGE 2: Rewrite and score a crime article that passed stage 1.
+
+        If search_context is empty, we run a quick DuckDuckGo search on the
+        article title to discover reference URLs and calibrate the imp_score.
+        Then we call Gemini with POST_PROCESS_PROMPT.
+        """
+        # Enrich search context if not already provided
+        if not search_context:
+            title = filter_article.get("title", "")
+            if title:
+                try:
+                    results = await self._search.ainvoke(f"{title} crime news")
+                    search_context = str(results)
+                except Exception as exc:
+                    logger.warning("DuckDuckGo post_process search failed (non-fatal): %s", exc)
+                    search_context = ""
+
+        user_message = build_post_process_message(filter_article, search_context)
+        try:
+            response = await self._llm.ainvoke([
+                SystemMessage(content=POST_PROCESS_PROMPT),
+                HumanMessage(content=user_message),
+            ])
+            text = str(response.content)
+        except Exception as exc:
+            logger.warning("Gemini post_process error: %s", exc)
+            return None
+        return parse_post_process_output(text)

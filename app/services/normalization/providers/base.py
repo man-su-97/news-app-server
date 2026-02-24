@@ -1,141 +1,116 @@
 """
 app/services/normalization/providers/base.py — AI Provider Abstractions & Shared Logic
 ========================================================================================
-This file is the heart of the AI normalization system. It defines:
+Two-stage AI processing pipeline for the crime news aggregator.
 
-1. NORMALIZATION_SYSTEM_PROMPT: The instruction given to every AI for extracting
-   article fields (title, url, description, etc.) from raw source payloads.
+STAGE 1 — FILTER (one call per raw article):
+  COMBINED_PROCESS_PROMPT   → extract fields + classify crime type (multi-label)
+  CombinedOutput            → validated Pydantic model for stage 1 output
+  build_process_message()   → builds user message with raw payload + web context
+  parse_combined_output()   → strips fences, validates, returns complete article dict
 
-2. ENRICHMENT_SYSTEM_PROMPT: The instruction for the second AI pass — classifying
-   crime type, extracting location, generating summary, scoring importance.
+STAGE 2 — POST-PROCESS (one call per crime article that passed stage 1):
+  POST_PROCESS_PROMPT       → rewrite title/description + score importance
+  PostProcessOutput         → validated Pydantic model for stage 2 output
+  build_post_process_message() → builds user message from filter stage result
+  parse_post_process_output()  → parses and validates stage 2 AI response
 
-3. Pydantic models (_NormOutput, EnrichmentOutput): Validate that the AI's JSON
-   response has the correct shape and valid values. If the AI returns garbage,
-   these models catch it and we fall back to None gracefully.
-
-4. Helper functions (build_user_message, build_enrichment_message, parse_*):
-   Shared utility functions used by ALL provider implementations, so the logic
-   lives in ONE place instead of being duplicated in Anthropic/OpenAI/Gemini files.
-
-5. AIProvider abstract base class: defines the interface ALL providers must implement.
-   IngestionService only depends on AIProvider — it doesn't know about Claude, GPT,
-   or Gemini specifically. Adding a new provider = add a subclass, no other changes.
+AIProvider abstract base class:
+  process()      — ABSTRACT: stage 1 (extract + classify)
+  post_process() — CONCRETE default: returns None (providers override for stage 2)
 
 Architecture pattern: "Strategy" pattern.
-  The provider is chosen at runtime (from DB config or env var) and injected
-  into IngestionService. IngestionService calls provider.normalize() and
-  provider.enrich() without knowing which AI is being used.
+  The provider (Gemini, Claude, etc.) is chosen at runtime and injected into
+  IngestionService. IngestionService calls provider.process() and post_process()
+  without knowing which AI backend is used.
 """
 
-import json     # For JSON serialization/deserialization
+import json
 import logging
-import re       # For stripping markdown code fences from AI responses
-from abc import ABC, abstractmethod  # ABC = Abstract Base Class
+import re
+from abc import ABC, abstractmethod
 
-# BaseModel = Pydantic model base
-# ValidationError = raised when AI output doesn't match expected schema
-# field_validator = decorator for custom field validation rules
 from pydantic import BaseModel, ValidationError, field_validator
 
-from app.services.source_normalizer import parse_date  # Reuse date parsing
-
+from app.services.source_normalizer import parse_date  # Reuse shared date parser
 
 logger = logging.getLogger(__name__)
 
+
 # ============================================================
-# PROMPT 1: Normalization — extract basic fields from raw data
+# STAGE 1: COMBINED PROCESS PROMPT — extract + classify
 # ============================================================
-# This is the SYSTEM MESSAGE sent to the AI for the first pass.
-# The AI receives raw JSON from an RSS feed or REST API and must extract
-# the canonical article fields.
-#
 # Design decisions:
-#   - "Return ONLY valid JSON" prevents the AI from wrapping in markdown (```json...```)
-#   - All fields are optional except title (an article must have a headline)
-#   - The exact output schema is specified to prevent the AI from adding extra fields
-NORMALIZATION_SYSTEM_PROMPT = """\
-You are a structured data extraction engine for a news aggregation system.
-You receive a raw JSON payload from a news source (RSS feed or REST API) and must
-extract canonical fields into a JSON object.
+#   - ONE prompt for stage 1: saves one API round-trip per article vs. two-step
+#   - "Return ONLY valid JSON" prevents markdown code fences (```json...```)
+#   - sub_category_ids as ARRAY: one article can span multiple crime types
+#     (e.g. kidnapping-for-ransom = Violent Crime + Financial Crime)
+#   - Fixed sub_category list prevents hallucinated values; unknown → "other"
+#   - web_search_context: DuckDuckGo results for better importance calibration
+COMBINED_PROCESS_PROMPT = """\
+You are a crime news processing engine for a real-time crime news aggregation platform.
+You receive raw JSON from a news source (RSS feed or REST API) and optional web search
+context. Your task: extract article fields AND classify the crime content in ONE pass.
 
 Rules:
 - Return ONLY valid JSON. No markdown, no prose, no code fences.
-- If a field is absent or genuinely ambiguous, use null for optional fields.
-- Normalize published_at to ISO 8601 UTC (e.g. "2024-01-15T10:30:00Z"), or null.
-- title is required. If truly absent, derive it from the first sentence of description.
-- url must be an absolute HTTP(S) URL. If absent or relative, return null for url.
-- description: 1-3 sentence summary, or null if no content is available.
-
-Output schema (return exactly this shape, nothing else):
-{
-  "title": "string",
-  "description": "string or null",
-  "url": "string or null",
-  "published_at": "ISO 8601 string or null",
-  "image_url": "string or null",
-  "author": "string or null"
-}"""
-
-# ============================================================
-# PROMPT 2: Enrichment — classify crime type, location, priority
-# ============================================================
-# This is the SYSTEM MESSAGE for the second AI pass (enrichment).
-# Input: already-normalized article (title + description + url + optional web search results)
-# Output: crime classification, location, region, summary, priority score
-#
-# Key design decisions:
-#   - "is_crime: true/false" allows the AI to flag non-crime articles for filtering
-#   - Fixed category and region lists prevent the AI from inventing new values
-#   - "web_search_context" field: if DuckDuckGo found related news, it's included here
-#     This allows the AI to calibrate importance_score based on real-world coverage
-ENRICHMENT_SYSTEM_PROMPT = """\
-You are a crime news analyst for a real-time crime news aggregation platform.
-Given a normalized news article (title, description, url) and optional web_search_context,
-produce a structured classification for card display and priority ranking.
-
-Rules:
-- Return ONLY valid JSON. No markdown, no prose, no code fences.
+- title: required. If absent, derive from the first sentence of description.
+- url: absolute HTTP(S) URL, or null if absent or relative.
+- description: 1-3 sentence factual summary, or null if no content.
+- published_at: ISO 8601 UTC (e.g. "2024-01-15T10:30:00Z"), or null.
+- image_url: absolute HTTP(S) URL, or null.
 - is_crime: true if the article is primarily about criminal activity, false otherwise.
-- category: "crime" when is_crime=true, otherwise pick from:
+- category: pick exactly one from:
     politics, technology, business, science, health, sports,
-    entertainment, world, environment, other
-- sub_category: when is_crime=true pick exactly one from:
+    entertainment, world, environment, crime, other
+  Use "crime" when is_crime=true.
+- sub_category: when is_crime=true pick the SINGLE BEST match from:
     murder, theft, fraud, cybercrime, terrorism, corruption,
     drugs, violence, trafficking, other
-  For non-crime set null.
+  Set null for non-crime articles.
+- sub_category_ids: when is_crime=true, pick ALL that apply (array) from the same list:
+    ["murder", "theft", "fraud", "cybercrime", "terrorism", "corruption",
+     "drugs", "violence", "trafficking", "other"]
+  Example: a kidnapping-for-ransom → ["violence", "fraud"]
+  Set [] for non-crime articles.
 - location: city and country where the incident occurred (e.g. "Mumbai, India").
   null if not determinable.
 - region: pick exactly one from:
     South Asia, Southeast Asia, East Asia, Central Asia,
     Middle East, Europe, North America, Latin America, Africa, Oceania, unknown
 - summary: 2-3 sentence factual summary suitable for a news card preview.
-  Be concise and objective. Do not editorialize.
-- importance_score: integer 1–10.
-    1–3  = local / minor interest
-    4–6  = regional / moderate public interest
-    7–8  = national / significant impact
-    9–10 = breaking / international crisis
+  Be concise and objective. null if insufficient content.
+- importance_score: integer 1-10.
+    1-3  = local / minor interest
+    4-6  = regional / moderate public interest
+    7-8  = national / significant impact
+    9-10 = breaking / international crisis
   Use web_search_context (if provided) to calibrate — wider coverage = higher score.
 
 Output schema (return exactly this shape, nothing else):
 {
+  "title": "string",
+  "url": "string or null",
+  "description": "string or null",
+  "image_url": "string or null",
+  "published_at": "ISO 8601 string or null",
   "is_crime": true or false,
   "category": "string",
   "sub_category": "string or null",
+  "sub_category_ids": ["string", ...],
   "location": "string or null",
   "region": "string",
-  "summary": "string",
+  "summary": "string or null",
   "importance_score": integer
 }"""
 
-# Valid values for category — AI must pick from this list exactly.
-# frozenset is immutable, which prevents accidental modification.
+# Valid values for category — lenient validator falls back to "other" instead of rejecting.
 _VALID_CATEGORIES = frozenset({
     "politics", "technology", "business", "science", "health", "sports",
     "entertainment", "world", "environment", "crime", "other",
 })
 
-# Valid crime subcategories — only used when category == "crime".
+# Valid crime subcategories — only meaningful when category == "crime".
 _VALID_CRIME_SUBCATEGORIES = frozenset({
     "murder", "theft", "fraud", "cybercrime", "terrorism", "corruption",
     "drugs", "violence", "trafficking", "other",
@@ -150,227 +125,295 @@ _VALID_REGIONS = frozenset({
 
 
 # ============================================================
-# Pydantic validation models
+# Pydantic validation model for STAGE 1 output
 # ============================================================
 
-class _NormOutput(BaseModel):
-    """Validates the JSON the AI returns for the normalization call.
+class CombinedOutput(BaseModel):
+    """Validates the JSON the AI returns from a single combined process() call.
 
-    If the AI omits a field or uses the wrong type, Pydantic raises ValidationError
-    and the caller returns None (article is dropped/retried). This protects the
-    database from receiving malformed data.
+    Design philosophy: LENIENT validation.
+      Old approach: strict validators raised ValueError → article dropped on bad AI output.
+      New approach: validators use sensible fallbacks → article saved with default values.
+
+    The only hard failure is a missing title — articles MUST have a headline.
     """
-    title: str                          # Required — article must have a title
-    description: str | None = None      # Optional
-    url: str | None = None             # Optional (validator in canonical_validator.py checks it)
-    published_at: str | None = None    # Optional — parsed to datetime in parse_llm_output()
-    image_url: str | None = None       # Optional
-    author: str | None = None          # Optional (not stored in Article model currently)
+    title: str                              # Required — ValidationError if missing → dropped
+    url: str | None = None                 # Optional — validated for http/https below
+    description: str | None = None         # Optional
+    image_url: str | None = None           # Optional
+    published_at: str | None = None        # Optional — parsed to datetime in parse_combined_output
+    is_crime: bool = True                  # Default True: fail-safe (don't drop on AI error)
+    category: str = "other"               # Default "other" — overridden by AI
+    sub_category: str | None = None        # Single best-match crime sub-type (legacy)
+    sub_category_ids: list[str] = []       # Multi-label list of matching sub-types
+    location: str | None = None            # City + country free text
+    region: str = "unknown"               # Default "unknown" if AI skips this field
+    summary: str | None = None             # Card preview text
+    importance_score: int = 5             # Default 5 (moderate) — overridden by AI
 
-
-class EnrichmentOutput(BaseModel):
-    """Validates the JSON the AI returns for the enrichment call.
-
-    All fields have defaults (except importance_score) so that partially-valid
-    AI responses can still be used. For example, if the AI returns a valid
-    category and score but forgets location, we still use what we got.
-    """
-    is_crime: bool = True              # Default True: fail-safe (don't drop on error)
-    category: str                      # Required — validated by _check_category
-    sub_category: str | None = None    # Only for crime articles
-    location: str | None = None        # City + country
-    region: str = "unknown"            # Default "unknown" if AI doesn't return valid region
-    summary: str = ""                  # AI-written card preview text
-    importance_score: int              # Required — 1-10 integer
-
-    @field_validator("category")
+    @field_validator("url", mode="before")
     @classmethod
-    def _check_category(cls, v: str) -> str:
-        """Normalize to lowercase and validate against the allowed list."""
-        v = v.lower().strip()
-        if v not in _VALID_CATEGORIES:
-            raise ValueError(f"Unknown category: {v!r}")
+    def _check_url(cls, v) -> str | None:
+        if not v or not isinstance(v, str):
+            return None
+        if not v.startswith(("http://", "https://")):
+            return None
         return v
 
-    @field_validator("sub_category")
+    @field_validator("category", mode="before")
     @classmethod
-    def _check_sub_category(cls, v: str | None) -> str | None:
-        """Validate crime subcategory if provided."""
-        if v is None:
+    def _check_category(cls, v) -> str:
+        if not isinstance(v, str):
+            return "other"
+        v = v.lower().strip()
+        return v if v in _VALID_CATEGORIES else "other"
+
+    @field_validator("sub_category", mode="before")
+    @classmethod
+    def _check_sub_category(cls, v) -> str | None:
+        if not v or not isinstance(v, str):
             return None
         v = v.lower().strip()
-        if v not in _VALID_CRIME_SUBCATEGORIES:
-            raise ValueError(f"Unknown sub_category: {v!r}")
-        return v
+        return v if v in _VALID_CRIME_SUBCATEGORIES else None
 
-    @field_validator("region")
+    @field_validator("sub_category_ids", mode="before")
     @classmethod
-    def _check_region(cls, v: str) -> str:
-        """Normalize region to lowercase. Fall back to 'unknown' if invalid.
+    def _check_sub_category_ids(cls, v) -> list[str]:
+        """Validate the multi-label sub_category list. Drop unrecognised entries."""
+        if not v or not isinstance(v, list):
+            return []
+        cleaned = []
+        for item in v:
+            if isinstance(item, str):
+                s = item.lower().strip()
+                if s in _VALID_CRIME_SUBCATEGORIES:
+                    cleaned.append(s)
+        return cleaned
 
-        Design decision: instead of raising ValueError (which would fail the
-        entire enrichment), we silently default to "unknown". Region is less
-        critical than category or score — a wrong region is better than no enrichment.
-        """
+    @field_validator("region", mode="before")
+    @classmethod
+    def _check_region(cls, v) -> str:
+        if not isinstance(v, str):
+            return "unknown"
         v_lower = v.lower().strip()
-        if v_lower not in _VALID_REGIONS:
-            return "unknown"   # Graceful fallback instead of rejection
-        return v_lower
+        return v_lower if v_lower in _VALID_REGIONS else "unknown"
 
-    @field_validator("importance_score")
+    @field_validator("importance_score", mode="before")
     @classmethod
-    def _check_score(cls, v: int) -> int:
-        """Ensure score is in the 1-10 range."""
-        if not (1 <= v <= 10):
-            raise ValueError(f"importance_score must be 1–10, got {v}")
-        return v
+    def _check_score(cls, v) -> int:
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return 5
+        return max(1, min(10, v))
 
 
 # ============================================================
-# Message builder helpers
+# STAGE 2: POST-PROCESS PROMPT — rewrite + score
+# ============================================================
+# Called ONLY for articles that passed stage 1 (is_crime=True).
+# Input: filter article data (title, description, url, sub_category).
+# Output: rewritten title/description + importance score 1-100 + reference URLs.
+#
+# Why separate from stage 1?
+#   - Stage 1 runs on ALL articles (cheap filter).
+#   - Stage 2 runs only on crime articles (expensive enrichment).
+#   - Different concerns: stage 1 is classification; stage 2 is publishing-quality writing.
+#   - Splitting reduces wasted compute on non-crime articles (typically 50-90% of raw feed).
+POST_PROCESS_PROMPT = """\
+You are a senior crime news editor for a real-time news platform.
+You receive a pre-classified crime news article (title, description, URL, crime type).
+Your task: produce a publication-ready version with improved writing and an importance score.
+
+Rules:
+- Return ONLY valid JSON. No markdown, no prose, no code fences.
+- rewritten_title: rewrite the headline to be clear, factual, and engaging (max 15 words).
+  Do NOT sensationalise. Use active voice. Include location if known.
+- rewritten_description: write a 2-3 sentence factual summary for a news card.
+  Include: what happened, who is involved (if known), where it occurred.
+  Do NOT include personal opinions or speculation.
+- reference_urls: list up to 5 related URLs from the web_search_context (if provided).
+  Only include URLs you find in the provided context — do NOT invent URLs.
+  Empty array [] if no web context is provided or no relevant URLs found.
+- imp_score: integer 1-100 importance score.
+    1-20:   Hyperlocal / minor incident (e.g. petty theft in a small town)
+    21-40:  Local / notable (e.g. single murder in a major city)
+    41-60:  Regional / significant (e.g. crime gang bust, notable fraud)
+    61-80:  National / high impact (e.g. major terrorism foiled, senior official arrested)
+    81-100: International / breaking crisis (e.g. multi-city attack, political assassination)
+  Factors: crime severity, number of victims, geographic scope, public official involvement,
+           media coverage breadth (use web_search_context to calibrate), recency.
+
+Output schema (return exactly this shape, nothing else):
+{
+  "rewritten_title": "string",
+  "rewritten_description": "string",
+  "reference_urls": ["url1", "url2", ...],
+  "imp_score": integer
+}"""
+
+
+# ============================================================
+# Pydantic validation model for STAGE 2 output
 # ============================================================
 
-def build_user_message(raw_payload: dict, source_type: str) -> str:
-    """Build the USER message for the normalization call.
+class PostProcessOutput(BaseModel):
+    """Validates the JSON the AI returns from a post_process() call."""
 
-    This is sent alongside NORMALIZATION_SYSTEM_PROMPT to the AI.
-    Including source_type ("rss" or "rest") helps the AI understand the
-    structure of the payload (RSS fields differ from REST API fields).
-    """
-    return (
-        f"Source type: {source_type}\n\n"
-        f"Raw payload:\n{json.dumps(raw_payload, default=str, indent=2)}"
-        # default=str: converts non-JSON types (like datetime) to strings
-        # indent=2: pretty-printed for better AI comprehension
-    )
+    rewritten_title: str                   # Required — if missing, caller falls back to original
+    rewritten_description: str = ""        # Defaults to empty string if missing
+    reference_urls: list[str] = []         # Default empty list
+    imp_score: int = 50                    # Default moderate score
+
+    @field_validator("reference_urls", mode="before")
+    @classmethod
+    def _check_urls(cls, v) -> list[str]:
+        """Keep only valid absolute HTTP/HTTPS URLs."""
+        if not isinstance(v, list):
+            return []
+        return [
+            url for url in v
+            if isinstance(url, str) and url.startswith(("http://", "https://"))
+        ]
+
+    @field_validator("imp_score", mode="before")
+    @classmethod
+    def _check_imp_score(cls, v) -> int:
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            return 50
+        return max(1, min(100, v))
 
 
-def build_enrichment_message(article: dict, search_context: str = "") -> str:
-    """Build the USER message for the enrichment call.
+# ============================================================
+# Stage 1 message builder
+# ============================================================
 
-    Sends a minimal JSON with just the fields the enrichment AI needs:
-    title, description, url. This is intentionally smaller than the full
-    raw_payload — the AI doesn't need the entire RSS entry to classify the article.
+def build_process_message(raw_payload: dict, source_type: str, search_context: str = "") -> str:
+    """Build the user message for the stage 1 combined process() AI call.
 
-    If search_context is provided (from DuckDuckGo), it's included so the AI
-    can calibrate importance_score based on how widely covered the story is.
+    Sends the full raw payload along with source_type so the AI understands
+    whether it's processing an RSS entry (feedparser keys) or a REST JSON object.
+
+    search_context: DuckDuckGo results passed by GeminiLangGraphProvider.
     """
     payload: dict = {
-        "title": article.get("title", ""),
-        "description": article.get("description"),
-        "url": article.get("url", ""),
+        "source_type": source_type,
+        "raw_payload": raw_payload,
     }
     if search_context:
-        # Add web search results as context for better importance scoring
         payload["web_search_context"] = search_context
-    return json.dumps(payload, ensure_ascii=False)  # ensure_ascii=False preserves Unicode
+    return json.dumps(payload, default=str, indent=2)
 
+
+# ============================================================
+# Stage 2 message builder
+# ============================================================
+
+def build_post_process_message(filter_article: dict, search_context: str = "") -> str:
+    """Build the user message for the stage 2 post_process() AI call.
+
+    filter_article: dict with fields from stage 1 output:
+      title, description, url, sub_category, location, summary
+    search_context: optional DuckDuckGo web search results.
+    """
+    payload: dict = {
+        "article": {
+            "title": filter_article.get("title", ""),
+            "description": filter_article.get("description") or filter_article.get("summary", ""),
+            "url": filter_article.get("url", ""),
+            "crime_type": filter_article.get("sub_category"),
+            "crime_types": filter_article.get("sub_category_ids", []),
+            "location": filter_article.get("location"),
+            "region": filter_article.get("region"),
+        }
+    }
+    if search_context:
+        payload["web_search_context"] = search_context
+    return json.dumps(payload, default=str, indent=2)
+
+
+# ============================================================
+# Code fence stripper (shared utility)
+# ============================================================
 
 def _strip_code_fences(text: str) -> str:
-    """Remove markdown code fences that some AI models add around JSON.
-
-    Problem: some models (especially Gemini) wrap responses in ```json ... ```
-    even when instructed not to. json.loads() fails on this format.
-    Solution: strip the fences before parsing.
-
-    Examples handled:
-      ```json\n{"key": "value"}\n```  → {"key": "value"}
-      ```\n{"key": "value"}\n```       → {"key": "value"}
-      {"key": "value"}                 → {"key": "value"} (unchanged)
-    """
+    """Remove markdown code fences that some AI models add around JSON."""
     text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*\n?", "", text)   # remove opening fence
-    text = re.sub(r"\n?```$", "", text)               # remove closing fence
+    text = re.sub(r"^```(?:json)?\s*\n?", "", text)
+    text = re.sub(r"\n?```$", "", text)
     return text.strip()
 
 
 # ============================================================
-# Output parsers
+# Stage 1 output parser
 # ============================================================
 
-def parse_llm_output(text: str, raw_payload: dict) -> dict | None:
-    """Parse and validate the AI's normalization response text.
+def parse_combined_output(text: str, raw_payload: dict) -> dict | None:
+    """Parse and validate the AI's stage 1 process() response.
 
-    1. Strip code fences (some models add them even when told not to)
-    2. Parse as JSON
-    3. Validate with _NormOutput Pydantic model
-    4. Convert published_at string to Python datetime
-    5. Return canonical article dict
-
-    Returns None on ANY failure — callers treat None as "this article failed,
-    try the next normalization method or drop it".
+    Returns a complete article dict (basic fields + enrichment) on success.
+    Returns None on any failure — caller treats None as "article dropped".
     """
     try:
-        # Step 1+2: strip fences and parse JSON
         data = json.loads(_strip_code_fences(text))
-        # Step 3: validate schema
-        output = _NormOutput.model_validate(data)
+        output = CombinedOutput.model_validate(data)
     except json.JSONDecodeError as exc:
-        logger.warning("AI provider returned non-JSON: %s", exc)
+        logger.warning("AI process: non-JSON response: %s | text=%r", exc, text[:200])
         return None
     except ValidationError as exc:
-        logger.warning("AI output failed schema validation: %s", exc)
+        logger.warning("AI process: missing required fields: %s", exc)
         return None
 
-    # Step 4: parse the date string to a Python datetime object
     published_at = parse_date(output.published_at) if output.published_at else None
 
-    # Step 5: return the canonical article dict shape
     return {
+        # Basic article fields
         "title": output.title,
         "description": output.description,
-        "content": None,          # Not extracted in this pipeline (future use)
-        "url": output.url or "",  # or "" ensures url is never None
+        "content": None,
+        "url": output.url or "",
         "image_url": output.image_url,
         "published_at": published_at,
-        "raw_payload": raw_payload,  # preserve original for audit/reprocessing
-    }
-
-
-# Canonical "null enrichment" returned when enrichment fails.
-# is_crime=True (default): articles are NOT dropped if enrichment fails.
-# All other fields None: article is saved but with no enrichment data.
-# This dict is exported so providers can import and return it on error.
-_NULL_ENRICHMENT: dict = {
-    "is_crime": True,       # IMPORTANT: default True prevents accidental article dropping
-    "category": None,
-    "sub_category": None,
-    "location": None,
-    "region": None,
-    "summary": None,
-    "importance_score": None,
-}
-
-
-def parse_enrichment_output(text: str) -> dict:
-    """Parse and validate the AI's enrichment response text.
-
-    Unlike parse_llm_output, this NEVER returns None — it always returns a dict.
-    On any failure, it returns _NULL_ENRICHMENT so the article is still saved
-    (just without enrichment data).
-
-    Architecture decision: enrichment is "best effort". A bad AI response should
-    never cause an article to be lost. The worst case is saving an article with
-    NULL enrichment fields, which is much better than silently dropping real news.
-    """
-    try:
-        data = json.loads(_strip_code_fences(text))
-        output = EnrichmentOutput.model_validate(data)
-    except json.JSONDecodeError as exc:
-        logger.warning("Enrichment: non-JSON response: %s", exc)
-        return _NULL_ENRICHMENT
-    except ValidationError as exc:
-        logger.warning("Enrichment: schema validation failed: %s", exc)
-        return _NULL_ENRICHMENT
-
-    return {
+        "raw_payload": raw_payload,
+        # Enrichment fields
         "is_crime": output.is_crime,
         "category": output.category,
         "sub_category": output.sub_category,
+        "sub_category_ids": output.sub_category_ids,   # NEW: multi-label list
         "location": output.location,
         "region": output.region,
-        "summary": output.summary or None,  # empty string → None
+        "summary": output.summary,
         "importance_score": output.importance_score,
+    }
+
+
+# ============================================================
+# Stage 2 output parser
+# ============================================================
+
+def parse_post_process_output(text: str) -> dict | None:
+    """Parse and validate the AI's stage 2 post_process() response.
+
+    Returns a dict with rewritten_title, rewritten_description, reference_urls, imp_score.
+    Returns None on any failure — caller uses stage 1 data as fallback.
+    """
+    try:
+        data = json.loads(_strip_code_fences(text))
+        output = PostProcessOutput.model_validate(data)
+    except json.JSONDecodeError as exc:
+        logger.warning("AI post_process: non-JSON response: %s | text=%r", exc, text[:200])
+        return None
+    except ValidationError as exc:
+        logger.warning("AI post_process: validation failed: %s", exc)
+        return None
+
+    return {
+        "rewritten_title": output.rewritten_title,
+        "rewritten_description": output.rewritten_description,
+        "reference_urls": output.reference_urls or [],
+        "imp_score": output.imp_score,
     }
 
 
@@ -381,47 +424,59 @@ def parse_enrichment_output(text: str) -> dict:
 class AIProvider(ABC):
     """Abstract base class that all AI provider implementations must subclass.
 
-    Why an abstract base class?
-      IngestionService depends on AIProvider, not on AnthropicProvider or
-      GeminiLangGraphProvider directly. This means:
-        - Adding a new AI provider = add a new subclass + register in factory
-        - No changes needed in IngestionService, routes, or any other file
-        - Tests can use a mock AIProvider without making real API calls
+    Two-stage interface:
+      process()      — ABSTRACT: stage 1 — extract fields + classify (all articles)
+      post_process() — CONCRETE: stage 2 — rewrite + score (crime articles only)
+                       Default implementation returns None (no enrichment).
+                       Override in subclasses to enable stage 2 processing.
 
-    Subclasses:
-      - AnthropicProvider      (providers/anthropic_prov.py)
-      - OpenAICompatibleProvider (providers/openai_prov.py)
-      - GeminiLangGraphProvider  (providers/gemini_langgraph_prov.py)
+    Adding a new AI provider:
+      1. Subclass AIProvider
+      2. Implement process() (required)
+      3. Implement post_process() (optional but recommended for full pipeline)
+      4. Register in provider_factory.py
     """
 
     @property
     @abstractmethod
     def model_id(self) -> str:
-        """Human-readable identifier stored in raw_ingestion_events.normalized_by.
+        """Human-readable identifier stored in raw_ingestion.normalized_by.
 
-        Used for tracking which AI processed each article. Example values:
+        Used for audit trail — which AI processed which article. Examples:
           "ai:anthropic:claude-haiku-4-5-20251001"
           "ai:gemini_langgraph:gemini-2.0-flash"
+          "ai:openai:gpt-4o-mini"
         """
 
     @abstractmethod
-    async def normalize(self, raw_payload: dict, source_type: str) -> dict | None:
-        """Extract canonical article fields from a raw source payload.
+    async def process(self, raw_payload: dict, source_type: str) -> dict | None:
+        """STAGE 1: Extract article fields AND classify crime type in a single AI call.
 
-        Returns a dict compatible with ArticleRepository.upsert_batch on success,
-        or None if the AI call fails or produces invalid output.
-        The caller (IngestionService) runs CanonicalValidator on the result.
+        Args:
+          raw_payload:  raw dict from RSS feed or REST API
+          source_type:  "rss" or "rest"
+
+        Returns:
+          dict: complete article dict including is_crime, sub_category_ids, location
+          None: if the AI call failed or returned invalid output
+
+        Contract:
+          - MUST NOT raise exceptions. Catch all errors internally and return None.
+          - is_crime=False → IngestionService filters the article out (not a crime article)
         """
 
-    @abstractmethod
-    async def enrich(self, article: dict) -> dict:
-        """Add category, sub_category, location, region, summary, importance_score.
+    async def post_process(self, filter_article: dict, search_context: str = "") -> dict | None:
+        """STAGE 2: Rewrite and score a crime article that passed stage 1.
 
-        Takes a NORMALIZED article dict (from normalize()) and returns an enrichment
-        dict with the AI-generated classification fields.
+        Default implementation returns None, meaning "no stage 2 enrichment".
+        Subclasses override this to enable rewriting + reference URL collection + scoring.
 
-        MUST always return a dict (never raise, never return None).
-        On any error, return _NULL_ENRICHMENT so the article is still saved.
-        The is_crime field in the return dict controls whether the article is kept
-        (is_crime=True) or dropped (is_crime=False).
+        Args:
+          filter_article: stage 1 result dict (title, description, url, sub_category, etc.)
+          search_context: optional web search results for reference URL discovery
+
+        Returns:
+          dict: {rewritten_title, rewritten_description, reference_urls, imp_score}
+          None: not supported / AI failed — caller will use stage 1 data as fallback
         """
+        return None

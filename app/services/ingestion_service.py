@@ -1,341 +1,506 @@
 """
 app/services/ingestion_service.py — Core Ingestion Pipeline
 ============================================================
-This is the most important service in the application.
-It orchestrates the entire pipeline from fetching raw news to storing
-enriched articles in the database.
+Orchestrates the full pipeline from raw fetch to publication-ready articles.
 
 Pipeline (in order):
-  1. FETCH:    Call RSSFetcher or RestFetcher to get raw items from the source
-  2. STORE:    Save every raw payload to raw_ingestion_events (idempotent dedup)
-  3. NORMALIZE: For each item, try deterministic rules first, then AI fallback
-  4. VALIDATE: Reject articles with missing title or invalid URL
-  5. ENRICH:   Call LangGraph agent → classify crime type, location, importance score
-  6. FILTER:   Drop non-crime articles (is_crime=False)
-  7. UPSERT:   Batch-insert all valid crime articles into the articles table
-  8. AUDIT:    Update raw_ingestion_events with success/failure status
+  1. FETCH         Call RSSFetcher or RestFetcher to get raw items from the source
+  2. STORE RAW     Save every raw payload to raw_ingestion (idempotent dedup)
+                   Returns {content_hash: raw_ingestion_id} for FK linking
+  3. LOAD AI       Resolve which AI provider to use (DB config or env fallback)
+  4. AI FILTER     Concurrently call AI for each item — classify + extract fields
+  5. SPLIT         Separate crime articles from non-crime/failed ones
+  6. FILTER STAGE  Insert crime articles into filter_articles
+                   Returns {main_url: filter_article_id} for FK linking
+  7. POST STAGE    Insert enriched articles into post_processed_articles
+  8. AUDIT         Update raw_ingestion statuses (filtered / filtered_out / failed)
 
-Key design principles:
-  - Best-effort: enrichment failure NEVER drops an article
-  - Idempotent: running the same source twice produces the same result
-  - Batch writes: single DB round-trip for the entire batch (not per-article)
-  - Isolation: AI provider is loaded once per batch, not once per article
-
-Architecture diagram:
-  IngestionService
-    ├── source_repo:        reads source config
-    ├── article_repo:       writes final articles
-    ├── raw_repo:           writes raw events + updates their status
-    └── ai_provider_repo:   loads the active AI provider config
+Key design decisions:
+  - SINGLE AI CALL per article — extracts fields AND classifies in one prompt
+  - CONCURRENT processing with asyncio.Semaphore + rate limiter
+  - BEST-EFFORT: failure on one article never drops others
+  - IDEMPOTENT: running the same source twice safely upserts, never duplicates
 """
 
+import asyncio
 import logging
-from collections import defaultdict  # dict where missing keys auto-get a default value
+import time as _time
+from collections import defaultdict
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
 from app.models.source import Source
 from app.repositories.ai_provider_repo import AIProviderRepository
-from app.repositories.article_repo import ArticleRepository
+from app.repositories.filter_article_repo import FilterArticleRepository
+from app.repositories.post_processed_article_repo import PostProcessedArticleRepository
 from app.repositories.raw_ingestion_repo import RawIngestionRepository, compute_content_hash
 from app.repositories.source_repo import SourceRepository
 from app.services.fetchers.rest_fetcher import RestFetcher
 from app.services.fetchers.rss_fetcher import RSSFetcher
 from app.services.normalization.ai_processor import get_env_fallback_provider
-from app.services.normalization.canonical_validator import validate
 from app.services.normalization.provider_factory import create_from_config
 from app.services.normalization.providers.base import AIProvider
-from app.services.source_normalizer import normalize, to_plain_dict
+from app.services.normalization.resolvers import CategoryResolver, LocationResolver, load_resolvers
+from app.services.source_normalizer import to_plain_dict
 
 logger = logging.getLogger(__name__)
 
 
-class IngestionService:
-    """Orchestrates the fetch → normalize → enrich → store pipeline for one source.
+class _RateLimiter:
+    """Enforces a minimum interval between AI API calls.
 
-    Constructor takes all required repositories via dependency injection.
-    This makes the service testable: tests can pass mock repos instead of
-    creating real DB sessions.
+    rpm=0 means unlimited — no delay applied (paid plans).
+    """
+
+    def __init__(self, rpm: int) -> None:
+        self._interval = (60.0 / rpm) if rpm > 0 else 0.0
+        self._lock = asyncio.Lock()
+        self._last: float = 0.0
+
+    async def wait(self) -> None:
+        if self._interval == 0.0:
+            return
+        async with self._lock:
+            elapsed = _time.monotonic() - self._last
+            gap = self._interval - elapsed
+            if gap > 0:
+                logger.debug(
+                    "Rate limiter: sleeping %.1fs to respect %d RPM",
+                    gap,
+                    round(60 / self._interval),
+                )
+                await asyncio.sleep(gap)
+            self._last = _time.monotonic()
+
+
+def _concurrency_from_rpm(rpm: int) -> int:
+    if rpm == 0:
+        return 10
+    if rpm <= 10:
+        return 1
+    if rpm <= 30:
+        return 2
+    if rpm <= 100:
+        return 5
+    return 10
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect rate limit / quota errors from any AI provider.
+
+    Covers: HTTP 429, Gemini ResourceExhausted, OpenAI rate limit strings.
+    """
+    msg = str(exc).lower()
+    return any(kw in msg for kw in (
+        "429", "rate limit", "quota",
+        "resource_exhausted",   # with underscore (some wrappers)
+        "resourceexhausted",    # google.api_core camelCase lowercased
+        "too many requests",
+    ))
+
+
+# ---- Process-level singletons -----------------------------------------------
+# ONE rate limiter and semaphore for the entire process, shared across ALL
+# concurrent ingestion runs (multiple sources via asyncio.gather in the scheduler)
+# AND across both pipeline stages (filter + post-process).
+#
+# Why global?
+#   The scheduler runs sources concurrently. Without a shared limiter, N sources
+#   each create their own _RateLimiter and fire at N× the intended RPM — blowing
+#   through the free-tier quota in minutes.
+#
+# Lazily initialized on first async call so asyncio primitives bind to the
+# running event loop (Python 3.10+ handles this correctly).
+_global_rate_limiter: "_RateLimiter | None" = None
+_global_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_global_limiter() -> tuple["_RateLimiter", asyncio.Semaphore]:
+    """Return (or lazily create) the shared process-level limiter + semaphore."""
+    global _global_rate_limiter, _global_semaphore
+    if _global_rate_limiter is None:
+        rpm = settings.AI_REQUESTS_PER_MINUTE
+        _global_rate_limiter = _RateLimiter(rpm)
+        _global_semaphore = asyncio.Semaphore(_concurrency_from_rpm(rpm))
+        logger.info(
+            "AI rate limiter initialised — RPM=%s, concurrency=%d, "
+            "retry_attempts=%d, retry_delay=%.0fs",
+            rpm if rpm > 0 else "unlimited",
+            _concurrency_from_rpm(rpm),
+            settings.AI_RETRY_ATTEMPTS,
+            settings.AI_RETRY_DELAY_SECONDS,
+        )
+    return _global_rate_limiter, _global_semaphore  # type: ignore[return-value]
+
+
+class IngestionService:
+    """Orchestrates the fetch → AI filter → store pipeline for one source.
+
+    Constructor takes all required repositories — no raw DB sessions here.
+    This keeps the service testable: tests can pass mock repos.
     """
 
     def __init__(
         self,
         source_repo: SourceRepository,
-        article_repo: ArticleRepository,
-        raw_repo: RawIngestionRepository | None = None,         # optional — some callers don't need audit
-        ai_provider_repo: AIProviderRepository | None = None,  # optional — falls back to env var
+        raw_repo: RawIngestionRepository | None = None,
+        filter_article_repo: FilterArticleRepository | None = None,
+        post_processed_repo: PostProcessedArticleRepository | None = None,
+        ai_provider_repo: AIProviderRepository | None = None,
+        db: AsyncSession | None = None,
+        # Kept for backwards compatibility — ignored in new pipeline
+        article_repo: object | None = None,
     ) -> None:
         self.source_repo = source_repo
-        self.article_repo = article_repo
         self.raw_repo = raw_repo
+        self.filter_article_repo = filter_article_repo
+        self.post_processed_repo = post_processed_repo
         self.ai_provider_repo = ai_provider_repo
+        self._db = db   # used to load resolvers once per ingest run
 
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
 
     async def ingest(self, source: Source) -> int:
-        """Run the full ingestion pipeline for one source. Returns articles written count.
+        """Run the full ingestion pipeline for one source.
 
-        This method is called by:
-          - POST /ingest/ route (manual trigger)
-          - scheduler.py _ingest_one_source() (automatic every 5 minutes)
-
-        Architecture: the AI provider is loaded ONCE per batch (not per article).
-        This avoids one DB query per article — for a batch of 50 articles, that's
-        49 saved queries.
+        Returns the count of post_processed_articles rows written.
+        Called by POST /ingest/ and the scheduler.
         """
-        # Step 1: FETCH — get raw items from the source URL
+        # Step 1: FETCH
         raw_items = await self._fetch_items(source)
         if not raw_items:
             logger.info("No items fetched from source_id=%s", source.id)
             return 0
 
-        # Step 2: STORE RAW — persist every raw payload before processing.
-        # "Dual-write" pattern: if normalization crashes, we haven't lost the data.
-        # compute_content_hash() is used as a dedup key (duplicate payloads skipped).
+        # Step 2: STORE RAW — dual-write before any AI processing
+        hash_to_raw_id: dict[str, int] = {}
         if self.raw_repo:
-            new_count = await self.raw_repo.store_batch(source.id, raw_items)
+            hash_to_raw_id = await self.raw_repo.store_batch(source.id, raw_items)
             logger.debug(
-                "Raw events: %d new of %d fetched (source_id=%s)",
-                new_count, len(raw_items), source.id,
-            )
-
-        # Step 3: LOAD AI PROVIDER — resolve which AI to use for this batch.
-        # Priority: DB-configured active provider → GEMINI_API_KEY env var
-        #         → ANTHROPIC_API_KEY env var → None (deterministic only)
-        ai_provider = await self._load_ai_provider()
-        if ai_provider is None:
-            logger.debug(
-                "No AI provider configured — deterministic-only normalization (source_id=%s)",
+                "raw_ingestion: stored %d hashes for source_id=%s",
+                len(hash_to_raw_id),
                 source.id,
             )
 
-        # Step 4-7: NORMALIZE + ENRICH + FILTER each article
-        valid_articles: list[dict] = []
-        normalized_hashes: dict[str, str] = {}   # hash → normalizer label (for audit)
-        failed_hashes: list[str] = []            # hashes that failed (for audit)
+        # Step 3: LOAD AI PROVIDER
+        ai_provider = await self._load_ai_provider()
+        if ai_provider is None:
+            logger.warning(
+                "No AI provider configured — skipping source_id=%s. "
+                "Set GEMINI_API_KEY in .env or configure via POST /ai-providers/",
+                source.id,
+            )
+            return 0
 
-        for raw in raw_items:
-            # Compute the same hash used in store_batch — links this loop to the stored raw event
-            content_hash = compute_content_hash(source.id, raw)
+        # Build (content_hash, raw_payload) pairs — content_hash links to raw_ingestion
+        items = [(compute_content_hash(source.id, raw), raw) for raw in raw_items]
 
-            # NORMALIZE: deterministic rules first, AI fallback if needed
-            article, label = await self._normalize_one(raw, source.type, ai_provider)
+        # Step 4: AI FILTER — concurrent, rate-limited
+        # Use the shared process-level limiter so all concurrent sources
+        # (scheduler runs them in parallel) count against the same quota.
+        rate_limiter, semaphore = _get_global_limiter()
 
-            if article is not None:
-                # ENRICH + FILTER: only if AI provider is configured
-                if ai_provider is not None:
-                    # Call AI to classify crime type, extract location, generate summary, score it
-                    enrichment = await self._enrich_one(article, ai_provider)
-                    # Merge enrichment fields into the article dict
-                    # (article now has category, sub_category, location, region, summary, score)
-                    article.update(enrichment)
+        logger.info("AI processing: %d articles — source_id=%s", len(items), source.id)
 
-                    # FILTER: drop non-crime articles (this is a crime-only news app)
-                    # is_crime=True by default — enrichment failure NEVER drops articles
-                    if not article.get("is_crime", True):
-                        logger.debug(
-                            "Dropping non-crime article: %r", article.get("url", "")
-                        )
-                        # Still count as "failed" in raw events (processed but not saved)
-                        failed_hashes.append(content_hash)
-                        continue  # Skip to the next article — don't add to valid_articles
+        async def process_with_semaphore(
+            content_hash: str, raw: dict
+        ) -> tuple[str, dict | None]:
+            async with semaphore:
+                await rate_limiter.wait()
+                result = await self._process_one(raw, source.type, ai_provider)
+                return content_hash, result
 
-                # Article passed all checks — add to the batch for DB insert
-                valid_articles.append(article)
-                normalized_hashes[content_hash] = label
-            else:
-                # Normalization failed (no title, no URL, AI error)
+        results = await asyncio.gather(
+            *[process_with_semaphore(ch, raw) for ch, raw in items],
+            return_exceptions=True,
+        )
+
+        # Step 5: SPLIT into buckets
+        crime_articles: list[dict] = []
+        filtered_hashes: dict[str, list[str]] = defaultdict(list)  # model_id → hashes
+        filtered_out_hashes: list[str] = []
+        failed_hashes: list[str] = []
+
+        for i, result in enumerate(results):
+            content_hash = items[i][0]
+
+            if isinstance(result, Exception):
+                logger.error("gather error for article hash=%s: %s", content_hash[:8], result)
                 failed_hashes.append(content_hash)
+                continue
 
-        # Step 8: UPSERT — single batch DB write for ALL valid articles.
-        # One DB round-trip regardless of batch size (50 articles = 1 query, not 50).
-        count = await self.article_repo.upsert_batch(valid_articles, source.id)
+            _, article = result
 
-        # Step 9: AUDIT — update raw_ingestion_events with success/failure status.
-        # best-effort: if this fails, the articles are already written — don't roll back.
-        if self.raw_repo:
-            await self._update_raw_statuses(source.id, normalized_hashes, failed_hashes)
+            if article is None:
+                failed_hashes.append(content_hash)
+                continue
+
+            if not article.get("is_crime", True):
+                logger.debug("Filtered out (non-crime): %r", article.get("url", "")[:60])
+                filtered_out_hashes.append(content_hash)
+                continue
+
+            # Attach the content_hash so filter_article_repo can look up raw_ingestion_id
+            article["content_hash"] = content_hash
+            crime_articles.append(article)
+            filtered_hashes[ai_provider.model_id].append(content_hash)
 
         logger.info(
-            "Ingestion complete: %d written, %d failed validation — source_id=%s",
-            count, len(failed_hashes), source.id,
+            "Filter stage: %d crime, %d filtered_out, %d failed — source_id=%s",
+            len(crime_articles),
+            len(filtered_out_hashes),
+            len(failed_hashes),
+            source.id,
         )
-        return count  # number of articles saved (for the HTTP response and scheduler log)
+
+        # Step 5b: RESOLVE FKs — translate AI strings to DB ids (one DB query each)
+        # Gracefully skip if no DB session available (test/legacy callers).
+        cat_resolver: CategoryResolver | None = None
+        loc_resolver: LocationResolver | None = None
+        if self._db is not None and crime_articles:
+            try:
+                cat_resolver, loc_resolver = await load_resolvers(self._db)
+            except Exception as exc:
+                logger.warning("Could not load resolvers (FKs will be NULL): %s", exc)
+
+        if crime_articles and (cat_resolver or loc_resolver):
+            for article in crime_articles:
+                if cat_resolver:
+                    # Legacy single FK (kept for backward compat)
+                    article["sub_category_id"] = cat_resolver.resolve(
+                        article.get("sub_category")
+                    )
+                    # New multi-label JSONB array — resolve each AI string to a DB id
+                    article["sub_category_ids"] = cat_resolver.resolve_all(
+                        article.get("sub_category_ids", [])
+                    )
+                if loc_resolver:
+                    state_id = loc_resolver.resolve(article.get("location"))
+                    article["location_id"] = state_id
+                    article["location_state_id"] = state_id  # also for filter_articles
+
+        # Step 5c: STAGE 2 — AI post-processing for crime articles
+        # Makes a second AI call per crime article to:
+        #   - Rewrite title and description for publication quality
+        #   - Discover reference URLs (via web search in supported providers)
+        #   - Assign a 1-100 importance score (finer than stage 1's 1-10)
+        if crime_articles:
+            crime_articles = await self._run_post_processing(
+                crime_articles, ai_provider, rate_limiter, semaphore
+            )
+
+        # Step 6: FILTER STAGE — write to filter_articles
+        url_to_filter_id: dict[str, int] = {}
+        if crime_articles and self.filter_article_repo:
+            url_to_filter_id = await self.filter_article_repo.insert_batch(
+                crime_articles, hash_to_raw_id
+            )
+            logger.debug(
+                "filter_articles: %d rows written — source_id=%s",
+                len(url_to_filter_id),
+                source.id,
+            )
+
+        # Step 7: POST-PROCESSING STAGE — write to post_processed_articles
+        count = 0
+        if crime_articles and self.post_processed_repo and url_to_filter_id:
+            count = await self.post_processed_repo.insert_batch(
+                crime_articles, url_to_filter_id
+            )
+            logger.debug(
+                "post_processed_articles: %d rows written — source_id=%s",
+                count,
+                source.id,
+            )
+
+        # Step 8: AUDIT — update raw_ingestion statuses (best-effort)
+        if self.raw_repo:
+            await self._update_raw_statuses(
+                source_id=source.id,
+                filtered=dict(filtered_hashes),
+                filtered_out=filtered_out_hashes,
+                failed=failed_hashes,
+                model_id=ai_provider.model_id,
+            )
+
+        logger.info(
+            "Ingestion complete: %d written, %d filtered_out, %d failed — source_id=%s",
+            count,
+            len(filtered_out_hashes),
+            len(failed_hashes),
+            source.id,
+        )
+        return count
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     async def _load_ai_provider(self) -> AIProvider | None:
-        """Resolve the AI provider to use for this ingest run.
+        """Resolve the AI provider.
 
-        Resolution order (first match wins):
-          1. DB-configured active provider (via POST /ai-providers + activate)
-          2. GEMINI_API_KEY environment variable → GeminiLangGraphProvider
-          3. ANTHROPIC_API_KEY environment variable → AnthropicProvider (legacy)
-          4. None → deterministic normalization only, no enrichment
-
-        The DB check is wrapped in try/except: if the DB is down or the config
-        is corrupted, we fall back to env vars instead of failing the entire batch.
+        Priority: DB active config → GEMINI_API_KEY env → ANTHROPIC_API_KEY env → None
         """
         if self.ai_provider_repo is not None:
             try:
                 config = await self.ai_provider_repo.get_active()
                 if config is not None:
-                    # create_from_config() returns a cached provider instance
                     return create_from_config(config)
             except Exception as exc:
                 logger.warning(
                     "Could not load DB AI provider config, falling back to env: %s", exc
                 )
-
-        # Fallback: check environment variables
         return get_env_fallback_provider()
 
     async def _fetch_items(self, source: Source) -> list[dict]:
-        """Fetch raw items from the source URL using the appropriate fetcher.
-
-        Dispatches to RSSFetcher (for RSS feeds) or RestFetcher (for REST APIs)
-        based on source.type.
-
-        Returns a list of plain Python dicts.
-        to_plain_dict() converts feedparser's special objects to JSON-serializable dicts
-        (needed before storing to JSONB). It's idempotent — safe to call on plain dicts too.
-
-        Returns [] on any error (fetch failed, network down, unknown type).
-        The caller handles the empty list gracefully.
-        """
+        """Fetch raw items from the source using the appropriate fetcher."""
         try:
             if source.type == "rss":
-                # RSSFetcher returns a feedparser Feed object
                 feed = await RSSFetcher().fetch(source.url)
-                # Convert feedparser's FeedParserDict entries to plain dicts
                 return [to_plain_dict(entry) for entry in feed.entries]
 
             if source.type == "rest":
-                # Get custom headers from source config (e.g. API keys)
                 headers = (source.config or {}).get("headers", {})
-                # RestFetcher returns a plain list of dicts already
                 items = await RestFetcher().fetch(source.url, headers=headers)
-                # to_plain_dict() is idempotent — safe to call on already-plain dicts
                 return [to_plain_dict(item) for item in items]
 
-            # Unknown source type — raise so it gets caught below and logged
             raise ValueError(f"Unknown source type: {source.type!r}")
         except Exception as exc:
-            # Any fetch error (network, parsing, unknown type) returns empty list.
-            # This source is skipped; other sources in the batch are unaffected.
             logger.error("Fetch failed for source_id=%s: %s", source.id, exc)
             return []
 
-    async def _normalize_one(
+    async def _call_with_retry(self, coro_fn, label: str) -> dict | None:
+        """Call coro_fn() with exponential backoff on rate limit / quota errors.
+
+        Uses AI_RETRY_ATTEMPTS and AI_RETRY_DELAY_SECONDS from config.
+        Non-rate-limit errors are logged and returned as None immediately.
+        """
+        delay = settings.AI_RETRY_DELAY_SECONDS
+        for attempt in range(settings.AI_RETRY_ATTEMPTS):
+            try:
+                return await coro_fn()
+            except Exception as exc:
+                if _is_rate_limit_error(exc) and attempt < settings.AI_RETRY_ATTEMPTS - 1:
+                    wait = delay * (2 ** attempt)
+                    logger.warning(
+                        "%s: rate limit hit (attempt %d/%d), backing off %.0fs — %s",
+                        label, attempt + 1, settings.AI_RETRY_ATTEMPTS, wait, exc,
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                logger.error("%s failed: %s", label, exc)
+                return None
+        return None
+
+    async def _process_one(
         self,
         raw: dict,
         source_type: str,
-        ai_provider: AIProvider | None,
-    ) -> tuple[dict | None, str]:
-        """Normalize one raw item. Returns (article_dict, normalizer_label) or (None, "").
+        ai_provider: AIProvider,
+    ) -> dict | None:
+        """Run one article through the AI provider. Retries on rate limit errors."""
+        article = await self._call_with_retry(
+            lambda: ai_provider.process(raw, source_type),
+            "ai_provider.process",
+        )
+        if article is None:
+            return None
 
-        Two-pass normalization strategy:
-          Pass 1 (deterministic): fast rule-based extraction. No API calls.
-            If result passes validation → return it immediately.
-            If validation fails → try AI fallback.
-          Pass 2 (AI fallback): send raw payload to AI for extraction.
-            Only used if: AI is configured AND deterministic pass failed.
-            If AI result passes validation → return it.
-            If AI also fails → return (None, "") — article is dropped.
-
-        Why deterministic first?
-          - Speed: deterministic is instant (~0ms), AI is ~1-2 seconds
-          - Cost: AI APIs charge per token — avoiding AI for well-structured sources saves money
-          - Reliability: deterministic works even when AI APIs are down
-        """
-        # Pass 1: Deterministic normalization — fast, no API calls
-        try:
-            data = normalize(raw)             # extract title/url/etc from raw dict
-            if validate(data).valid:
-                # Good article — return immediately without calling AI
-                return data, "deterministic"
-            # Validation failed (e.g. missing URL) — log and fall through to AI
-            logger.debug("Deterministic output invalid — routing to AI fallback")
-        except Exception as exc:
-            # normalize() itself raised (shouldn't happen with well-formed data)
-            logger.error("Deterministic normalization raised: %s", exc)
-
-        # Pass 2: AI fallback — only if AI is configured
-        if ai_provider is not None:
-            try:
-                # Send raw payload to AI for extraction
-                ai_data = await ai_provider.normalize(raw, source_type)
-                if ai_data is not None and validate(ai_data).valid:
-                    # AI produced a valid article
-                    return ai_data, ai_provider.model_id
-                logger.warning(
-                    "AI provider %s produced invalid output for source_type=%s",
-                    ai_provider.model_id, source_type,
-                )
-            except Exception as exc:
-                logger.error("AI provider %s raised: %s", ai_provider.model_id, exc)
-
-        # Both passes failed — this article is dropped
-        return None, ""
-
-    async def _enrich_one(self, article: dict, ai_provider: AIProvider) -> dict:
-        """Call the AI provider's enrich() method to add classification fields.
-
-        Best-effort wrapper: ANY exception is caught and logged.
-        Always returns a valid dict — never raises.
-
-        On success: returns dict with is_crime, category, sub_category, location,
-                    region, summary, importance_score
-        On failure: returns all-None dict (with is_crime=True so article isn't dropped)
-        """
-        # The null enrichment — returned if anything goes wrong
-        _null = {"is_crime": True, "category": None, "sub_category": None,
-                 "location": None, "region": None, "summary": None, "importance_score": None}
-        try:
-            # ai_provider.enrich() is itself guaranteed to never raise (it has its own try/except)
-            # But we add an outer try/except here as an extra safety net
-            return await ai_provider.enrich(article)
-        except Exception as exc:
+        url = article.get("url", "")
+        if not url or not url.startswith(("http://", "https://")):
             logger.warning(
-                "Enrichment failed for article %r (provider=%s): %s",
-                article.get("url", ""),
-                ai_provider.model_id,
-                exc,
+                "AI returned article without valid URL — dropping: %r",
+                article.get("title", "")[:60],
             )
-            return _null
+            return None
+
+        return article
+
+    async def _run_post_processing(
+        self,
+        crime_articles: list[dict],
+        ai_provider: AIProvider,
+        rate_limiter: "_RateLimiter",
+        semaphore: asyncio.Semaphore,
+    ) -> list[dict]:
+        """Run stage 2 post-processing concurrently for all crime articles.
+
+        Calls ai_provider.post_process() for each article. If the provider
+        does not support post_process() (returns None), the article is returned
+        unchanged — stage 1 data is used as-is in post_processed_articles.
+
+        Uses the SAME rate_limiter and semaphore as stage 1 so both stages
+        share the same per-minute budget — no burst between stages.
+
+        Returns the same list with stage 2 fields merged in where available:
+          - rewritten_title, rewritten_description, reference_urls, imp_score
+        """
+        async def post_process_one(article: dict) -> dict:
+            async with semaphore:
+                await rate_limiter.wait()
+                result = await self._call_with_retry(
+                    lambda: ai_provider.post_process(article),
+                    "ai_provider.post_process",
+                )
+
+            if result:
+                # Merge stage 2 fields into the article dict
+                article["rewritten_title"] = result.get("rewritten_title")
+                article["rewritten_description"] = result.get("rewritten_description")
+                article["stage2_reference_urls"] = result.get("reference_urls", [])
+                article["imp_score"] = result.get("imp_score")
+                logger.debug(
+                    "Stage 2 done: imp_score=%s title=%r",
+                    article["imp_score"],
+                    (article["rewritten_title"] or article["title"])[:60],
+                )
+            return article
+
+        updated = await asyncio.gather(
+            *[post_process_one(a) for a in crime_articles],
+            return_exceptions=True,
+        )
+
+        # Return only successful results; re-use original on exception
+        final = []
+        for i, item in enumerate(updated):
+            if isinstance(item, Exception):
+                logger.error(
+                    "post_processing gather error for article %d: %s", i, item
+                )
+                final.append(crime_articles[i])   # keep original stage 1 data
+            else:
+                final.append(item)
+
+        scored = sum(1 for a in final if a.get("imp_score") is not None)
+        logger.info(
+            "Stage 2 complete: %d/%d articles scored — source run",
+            scored, len(final),
+        )
+        return final
 
     async def _update_raw_statuses(
         self,
         source_id: int,
-        normalized: dict[str, str],   # {hash: normalizer_label} for successful articles
-        failed: list[str],            # [hash, ...] for failed articles
+        filtered: dict[str, list[str]],      # {model_id: [hashes]}
+        filtered_out: list[str],
+        failed: list[str],
+        model_id: str,
     ) -> None:
-        """Update raw_ingestion_events with the outcome of this ingest run.
-
-        This is BEST-EFFORT: if this fails, the articles are already written to the DB.
-        We never roll back written articles because raw status update failed.
-        The try/except here ensures that a raw status update failure is just logged,
-        not propagated up as an HTTP 500 error.
-
-        normalized dict is grouped by normalizer label (for the normalized_by column):
-          {"deterministic": [...], "ai:gemini_langgraph:gemini-2.0-flash": [...]}
-        """
+        """Update raw_ingestion rows with pipeline outcome. Best-effort."""
         try:
-            if normalized:
-                # Group hashes by their normalizer for the batch update
-                by_normalizer: dict[str, list[str]] = defaultdict(list)
-                for h, label in normalized.items():
-                    by_normalizer[label].append(h)
-                # Single batch UPDATE per normalizer label
-                await self.raw_repo.mark_normalized(source_id, dict(by_normalizer))
+            if filtered:
+                await self.raw_repo.mark_filtered(source_id, filtered)
+            if filtered_out:
+                await self.raw_repo.mark_filtered_out(source_id, filtered_out, model_id)
             if failed:
-                # Batch UPDATE for all failed articles
-                await self.raw_repo.mark_failed(source_id, failed, "validation_failed")
+                await self.raw_repo.mark_failed(source_id, failed, "processing_failed")
         except Exception as exc:
-            # Don't let audit failures bubble up — articles are already saved
             logger.warning(
-                "Failed to update raw event statuses for source_id=%s: %s",
-                source_id, exc,
+                "Failed to update raw_ingestion statuses for source_id=%s: %s",
+                source_id,
+                exc,
             )

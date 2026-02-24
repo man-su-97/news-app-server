@@ -15,16 +15,16 @@ Typical usage flow:
   3. Scheduler automatically fetches it every 5 minutes going forward
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.core.deps import get_source_repo
 from app.repositories.source_repo import SourceRepository
-from app.schemas.source_schema import SourceCreate, SourceResponse
+from app.schemas.source_schema import SourceCreate, SourceResponse, SourceUpdate
 
 router = APIRouter()
 
 
-@router.post("/", response_model=SourceResponse, status_code=201)
+@router.post("/", response_model=SourceResponse, status_code=201, summary="Register a new news source")
 async def create_source(
     payload: SourceCreate,              # Request body (validated by Pydantic automatically)
     repo: SourceRepository = Depends(get_source_repo),
@@ -54,31 +54,65 @@ async def create_source(
     return await repo.create(payload)
 
 
-@router.get("/", response_model=list[SourceResponse])
+@router.get("/", response_model=list[SourceResponse], summary="List news sources")
 async def list_sources(
+    include_inactive: bool = Query(False, description="Set true to include paused/inactive sources"),
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """List all active news sources.
+    """List news sources. Active sources only by default.
 
-    Only returns active sources (is_active=True).
-    Deactivated sources are hidden from this list.
+    Pass `?include_inactive=true` to also see sources that have been paused
+    (is_active=false). Useful for re-activating a source without re-adding it.
     """
-    # get_all(active_only=True) is the default — only active sources are returned
-    return await repo.get_all()
+    active_only = not include_inactive
+    return await repo.get_all(active_only=active_only)
 
 
-@router.get("/{source_id}", response_model=SourceResponse)
+@router.get("/{source_id}", response_model=SourceResponse, summary="Get source by ID")
 async def get_source(
-    source_id: int,    # Extracted from the URL path: /sources/3 → source_id=3
+    source_id: int,
     repo: SourceRepository = Depends(get_source_repo),
 ):
-    """Get a single source by its ID.
-
-    Useful for checking the configuration of a specific source
-    or verifying it exists before triggering manual ingestion.
-    Returns 404 if the source doesn't exist.
-    """
+    """Get a single source by its ID. Returns 404 if it doesn't exist."""
     source = await repo.get_by_id(source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     return source
+
+
+@router.patch("/{source_id}", response_model=SourceResponse, summary="Update a source")
+async def update_source(
+    source_id: int,
+    payload: SourceUpdate,
+    repo: SourceRepository = Depends(get_source_repo),
+):
+    """Partially update a source. Only the fields you send are changed.
+
+    Common uses:
+      - Pause a source:    `{"is_active": false}`
+      - Resume a source:   `{"is_active": true}`
+      - Change the URL:    `{"url": "https://new-feed.example.com/rss"}`
+
+    The scheduler respects is_active immediately on the next 5-minute cycle.
+    Returns 404 if the source doesn't exist.
+    """
+    source = await repo.update(source_id, payload)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return source
+
+
+@router.delete("/{source_id}", status_code=204, summary="Delete a source")
+async def delete_source(
+    source_id: int,
+    repo: SourceRepository = Depends(get_source_repo),
+):
+    """Permanently delete a source and stop fetching from it.
+
+    To temporarily pause instead of deleting, use PATCH with `{"is_active": false}`.
+    Returns 404 if the source doesn't exist.
+    status_code=204: success with no response body.
+    """
+    deleted = await repo.delete(source_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Source not found")

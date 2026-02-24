@@ -22,49 +22,70 @@ Called by: IngestionService._load_ai_provider() as the last fallback.
 
 import logging
 
-from app.core.config import settings   # reads GEMINI_API_KEY and ANTHROPIC_API_KEY from .env
-from app.services.normalization.provider_factory import create_from_env, create_gemini_from_env
+from app.core.config import settings
+from app.services.normalization.provider_factory import (
+    create_from_env,
+    create_gemini_from_env,
+    create_gemini_multimodal_from_env,
+)
 from app.services.normalization.providers.base import AIProvider
 
 logger = logging.getLogger(__name__)
 
 # Default model IDs used when creating providers from env vars.
-# Users can override these by using the DB config API instead.
-_GEMINI_DEFAULT_MODEL = "gemini-2.0-flash"          # Fast Gemini model
-_ANTHROPIC_FALLBACK_MODEL = "claude-haiku-4-5-20251001"  # Fast and cheap Claude model
+# Users can override these by configuring a provider via POST /ai-providers.
+_GEMINI_DEFAULT_MODEL = "gemini-2.0-flash"
+_ANTHROPIC_FALLBACK_MODEL = "claude-haiku-4-5-20251001"
 
 
 def get_env_fallback_provider() -> AIProvider | None:
     """Return an AI provider built from environment variables, or None.
 
-    Priority:
-      1. GEMINI_API_KEY → GeminiLangGraphProvider (crime app's recommended default)
-         This includes LangGraph + DuckDuckGo web search for better enrichment.
-      2. ANTHROPIC_API_KEY → AnthropicProvider (legacy backwards-compat)
-         Basic enrichment without web search.
-      3. Neither → None → ingestion runs with deterministic-only normalization.
+    Resolution order (first available wins):
 
-    Provider instances are cached in provider_factory.py's module-level cache,
-    so calling this function multiple times (e.g. every scheduled ingest run)
-    does NOT create new SDK client objects each time — they're reused.
+      1. GEMINI_API_KEY → GeminiMultimodalLangGraphProvider  ← RECOMMENDED
+            Two-graph LangGraph pipeline with:
+            • Multimodal Gemini (image + text classification)
+            • Structured output (no JSON parsing)
+            • Multi-label sub_category_ids
+            • Concurrent DuckDuckGo search in both stages
+            • Proper imp_score 1-100 from post_process stage
+
+      2. GEMINI_API_KEY (fallback) → GeminiLangGraphProvider
+            Used only if the multimodal provider fails to initialise.
+            Single-graph, single combined AI call per article.
+
+      3. ANTHROPIC_API_KEY → AnthropicProvider
+            Claude-based enrichment without web search.
+
+      4. Neither key set → None
+            Ingestion skips AI processing entirely.
+
+    Instances are cached in provider_factory._provider_cache for the process
+    lifetime, so repeated calls (every scheduler run) reuse the same client.
     """
-    # Check GEMINI_API_KEY first — this is the recommended provider for this app
     if settings.GEMINI_API_KEY:
+        # Try multimodal first (recommended path)
         try:
-            # create_gemini_from_env() returns (or creates) a cached GeminiLangGraphProvider
+            return create_gemini_multimodal_from_env(
+                api_key=settings.GEMINI_API_KEY,
+                model=_GEMINI_DEFAULT_MODEL,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to build GeminiMultimodal provider, falling back to LangGraph: %s", exc
+            )
+        # Fallback: original LangGraph provider (no multimodal, no structured output)
+        try:
             return create_gemini_from_env(
                 api_key=settings.GEMINI_API_KEY,
                 model=_GEMINI_DEFAULT_MODEL,
             )
         except Exception as exc:
-            # Building the provider failed (e.g. invalid API key format)
-            # Log it and try the next fallback
-            logger.error("Failed to build Gemini env-var provider: %s", exc)
+            logger.error("Failed to build GeminiLangGraph fallback provider: %s", exc)
 
-    # Check ANTHROPIC_API_KEY as a secondary fallback
     if settings.ANTHROPIC_API_KEY:
         try:
-            # create_from_env() returns (or creates) a cached AnthropicProvider
             return create_from_env(
                 api_key=settings.ANTHROPIC_API_KEY,
                 model=_ANTHROPIC_FALLBACK_MODEL,
@@ -72,7 +93,4 @@ def get_env_fallback_provider() -> AIProvider | None:
         except Exception as exc:
             logger.error("Failed to build Anthropic env-var provider: %s", exc)
 
-    # Neither key is set — ingestion will use deterministic-only normalization.
-    # This is fine: articles from well-structured RSS feeds will still be saved.
-    # Only poorly-structured sources (missing title or URL) will be dropped.
     return None

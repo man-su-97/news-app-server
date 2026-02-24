@@ -13,25 +13,23 @@ Models you can use (set when creating the DB config):
   "claude-sonnet-4-6"          — balanced quality/cost
   "claude-opus-4-6"            — highest quality, slowest, most expensive
 
-Architecture note: AnthropicProvider does NOT use LangGraph for enrichment.
-It makes a direct API call to Claude for both normalize() and enrich().
-For web-search-enhanced enrichment, use GeminiLangGraphProvider instead.
+Single-call design: process() makes ONE API call that extracts basic fields AND
+classifies crime type/location/score simultaneously. This is more efficient than
+the old two-call approach (normalize then enrich separately).
 """
 
 import logging
 
 import anthropic   # Anthropic's official Python SDK
 
-# Import everything we need from the shared base module
 from app.services.normalization.providers.base import (
     AIProvider,
-    ENRICHMENT_SYSTEM_PROMPT,
-    NORMALIZATION_SYSTEM_PROMPT,
-    _NULL_ENRICHMENT,            # The "all-None" fallback dict returned on error
-    build_enrichment_message,
-    build_user_message,
-    parse_enrichment_output,
-    parse_llm_output,
+    COMBINED_PROCESS_PROMPT,
+    POST_PROCESS_PROMPT,
+    build_post_process_message,
+    build_process_message,
+    parse_combined_output,
+    parse_post_process_output,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,72 +38,71 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(AIProvider):
     """Claude models via Anthropic's Python SDK.
 
-    Uses Anthropic's native API format (system= parameter) rather than
-    the messages array, which improves instruction-following for structured output.
+    Uses Anthropic's native system= parameter for better instruction-following.
+    Makes a single combined API call per article (extract + classify in one shot).
     """
 
     def __init__(self, api_key: str, model: str) -> None:
         self._model = model
         # AsyncAnthropic manages HTTP connection pooling internally.
         # This client is created ONCE (cached in provider_factory.py) and
-        # reused across all normalize() and enrich() calls.
+        # reused across all process() calls to avoid repeated connection overhead.
         self._client = anthropic.AsyncAnthropic(api_key=api_key)
 
     @property
     def model_id(self) -> str:
-        """Identifier stored in raw_ingestion_events.normalized_by for audit trail."""
+        """Identifier stored in raw_ingestion_events.normalized_by for audit trail.
+        Example: "ai:anthropic:claude-haiku-4-5-20251001"
+        """
         return f"ai:anthropic:{self._model}"
 
-    async def normalize(self, raw_payload: dict, source_type: str) -> dict | None:
-        """Call Claude to extract canonical article fields from a raw payload.
+    async def process(self, raw_payload: dict, source_type: str) -> dict | None:
+        """Single Claude API call: extract article fields + classify crime content.
 
         The AI receives:
-          - system: NORMALIZATION_SYSTEM_PROMPT (instructions)
-          - user message: source type + the raw payload as JSON
+          - system: COMBINED_PROCESS_PROMPT (extraction + classification instructions)
+          - user message: source_type + raw payload as pretty-printed JSON
 
-        max_tokens=512: normalization output is a small JSON object, doesn't need more.
-        Anthropic APIError covers all API-level errors (auth, rate limit, server error).
-        Returns None on any error so the caller tries the next method.
+        max_tokens=768: combined output is larger than extraction-only was (512).
+        All enrichment fields are included in the same response.
+
+        Returns the complete article dict or None on any error.
         """
-        user_message = build_user_message(raw_payload, source_type)
+        user_message = build_process_message(raw_payload, source_type)
         try:
             response = await self._client.messages.create(
                 model=self._model,
-                max_tokens=512,                          # JSON output is small
-                system=NORMALIZATION_SYSTEM_PROMPT,      # Anthropic's native system param
+                max_tokens=768,                         # Enough for complete JSON output
+                system=COMBINED_PROCESS_PROMPT,         # Anthropic's native system param
                 messages=[{"role": "user", "content": user_message}],
             )
             # response.content[0].text: the AI's text response
             text = response.content[0].text
         except anthropic.APIError as exc:
-            # Catches auth errors, rate limits, server errors, timeouts
+            # Catches auth errors, rate limits, server errors, network timeouts
             logger.error("Anthropic API error: %s", exc)
-            return None  # Caller will try AI fallback or drop the article
+            return None  # Caller drops this article
 
-        # Parse and validate the JSON text into a canonical article dict
-        return parse_llm_output(text, raw_payload)
+        # parse_combined_output handles: code fence stripping, JSON parsing,
+        # Pydantic validation, date parsing → returns complete article dict or None
+        return parse_combined_output(text, raw_payload)
 
-    async def enrich(self, article: dict) -> dict:
-        """Call Claude to classify the article and generate enrichment fields.
+    async def post_process(self, filter_article: dict, search_context: str = "") -> dict | None:
+        """STAGE 2: Rewrite and score a crime article using POST_PROCESS_PROMPT.
 
-        Sends the article title/description/url (no raw payload — smaller is better).
-        max_tokens=256: enrichment output is a small JSON object.
-
-        On any API error, returns _NULL_ENRICHMENT (all fields None, is_crime=True).
-        The is_crime=True default means enrichment failure NEVER drops articles.
+        Makes a second Claude API call with the filter stage output.
+        Returns rewritten_title, rewritten_description, reference_urls, imp_score.
         """
-        user_message = build_enrichment_message(article)
+        user_message = build_post_process_message(filter_article, search_context)
         try:
             response = await self._client.messages.create(
                 model=self._model,
-                max_tokens=256,                         # Enrichment JSON is compact
-                system=ENRICHMENT_SYSTEM_PROMPT,
+                max_tokens=600,
+                system=POST_PROCESS_PROMPT,
                 messages=[{"role": "user", "content": user_message}],
             )
             text = response.content[0].text
         except anthropic.APIError as exc:
-            logger.warning("Anthropic enrichment API error: %s", exc)
-            return _NULL_ENRICHMENT   # Fail safe: article is saved with NULL enrichment
-
-        # Parse and validate — returns _NULL_ENRICHMENT internally on parse error too
-        return parse_enrichment_output(text)
+            logger.error("Anthropic post_process API error: %s", exc)
+            return None
+        return parse_post_process_output(text)

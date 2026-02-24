@@ -18,12 +18,22 @@ from contextlib import asynccontextmanager  # Needed for the lifespan context ma
 from fastapi import FastAPI              # The main FastAPI class — creates the web server
 from fastapi.middleware.cors import CORSMiddleware  # Handles browser cross-origin requests
 
+# Register ALL ORM models with SQLAlchemy's mapper registry at startup.
+# This must happen before any query runs so relationship() string targets
+# (e.g. "MasterSubCategory") can be resolved. The package __init__.py
+# imports every model in dependency order.
+import app.models  # noqa: F401
+
 # Import each route group from its own file.
 # Each router is a mini "sub-app" that handles a specific area of functionality.
-from app.api.routes_ai_providers import router as ai_provider_router  # /ai-providers endpoints
-from app.api.routes_articles import router as article_router           # /articles endpoints
-from app.api.routes_ingest import router as ingest_router              # /ingest endpoints
-from app.api.routes_sources import router as source_router             # /sources endpoints
+from app.api.routes_ai_providers import router as ai_provider_router          # /ai-providers endpoints
+from app.api.routes_articles import router as article_router                  # /articles endpoints
+from app.api.routes_filter_articles import router as filter_article_router    # /filter-articles endpoints
+from app.api.routes_final_articles import router as final_article_router      # /final-articles endpoints
+from app.api.routes_ingest import router as ingest_router                     # /ingest endpoints
+from app.api.routes_master_data import router as master_data_router           # /categories, /sub-categories, /countries, /states
+from app.api.routes_raw_ingestion import router as raw_ingestion_router       # /raw-ingestion endpoints
+from app.api.routes_sources import router as source_router                    # /sources endpoints
 
 # The scheduler runs background jobs (fetch news every 5 minutes)
 from app.services.scheduler import start_scheduler, stop_scheduler
@@ -64,19 +74,27 @@ app = FastAPI(title="News Aggregator API", version="0.2.0", lifespan=lifespan)
 #   allow_origins=["https://your-frontend.com"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],        # Accept requests from any domain
-    allow_credentials=True,     # Allow cookies/auth headers in cross-origin requests
-    allow_methods=["*"],        # Allow GET, POST, DELETE, PATCH, etc.
-    allow_headers=["*"],        # Allow any request headers
+    allow_origins=["*"],   # Accept requests from any domain
+    allow_methods=["*"],   # Allow GET, POST, DELETE, PATCH, etc.
+    allow_headers=["*"],   # Allow any request headers
+    # allow_credentials is intentionally omitted (default False).
+    # Combining allow_credentials=True with allow_origins=["*"] is rejected
+    # by all browsers per the CORS spec. This API uses no cookies or sessions,
+    # so credentials are not needed. If auth is added later, set
+    # allow_origins to specific domains and re-enable allow_credentials.
 )
 
 # Register route groups with URL prefixes.
 # prefix="/sources" means all routes inside routes_sources.py get /sources prepended.
 # tags=["Sources"] groups them together in the Swagger UI (/docs).
 app.include_router(source_router, prefix="/sources", tags=["Sources"])
+app.include_router(raw_ingestion_router, prefix="/raw-ingestion", tags=["Raw Ingestion"])
+app.include_router(filter_article_router, prefix="/filter-articles", tags=["Filter Articles"])
 app.include_router(article_router, prefix="/articles", tags=["Articles"])
+app.include_router(final_article_router, prefix="/final-articles", tags=["Final Feed"])
 app.include_router(ingest_router, prefix="/ingest", tags=["Ingestion"])
 app.include_router(ai_provider_router, prefix="/ai-providers", tags=["AI Providers"])
+app.include_router(master_data_router, prefix="/master", tags=["Master Data"])
 
 
 # Simple health check endpoint.

@@ -1,85 +1,98 @@
 """
 app/schemas/article_schema.py — Article API Response Schemas
 =============================================================
-Pydantic schemas define the shape of JSON data that goes IN and OUT of the API.
+Pydantic schemas for the /articles/ API endpoints.
 
-Key difference between models and schemas:
-  - models/article.py  → SQLAlchemy model — describes the DATABASE table structure
-  - schemas/article_schema.py → Pydantic schema — describes the HTTP REQUEST/RESPONSE body
+These map to the two-stage pipeline tables:
+  FilterArticleResponse        → filter_articles table (stage 1 AI output)
+  PostProcessedArticleResponse → post_processed_articles table (stage 2 AI output)
 
-Why separate schemas from models?
-  - You might want to expose only SOME columns to the API (never expose raw_payload,
-    internal flags, etc.) without changing the DB structure.
-  - You can have different schemas for different operations (e.g. CreateRequest
-    vs UpdateRequest vs Response — each with different required fields).
-  - Pydantic handles JSON serialization (datetime → ISO string, etc.) automatically.
+The GET /articles/ endpoint uses PostProcessedArticleResponse — the final,
+publication-ready version of each article that the frontend renders.
 
-from_attributes = True:
-  This tells Pydantic that it can build the schema from a SQLAlchemy ORM object
-  (not just a plain dict). Without this, doing ArticleResponse.from_orm(article_obj)
-  would fail because ORM objects don't behave exactly like dicts.
+FilterArticleResponse is available for internal/debug endpoints.
+
+ArticleResponse is a backwards-compatible alias for PostProcessedArticleResponse
+so any existing API clients do not break.
 """
 
 from datetime import datetime
 
-from pydantic import BaseModel   # Base class for all Pydantic models
+from pydantic import BaseModel
 
 
-class ArticleResponse(BaseModel):
-    """Schema for a single article returned by the API.
+class FilterArticleResponse(BaseModel):
+    """Response schema for a stage-1 AI filter article (filter_articles table).
 
-    This is what the frontend receives — every field here appears in the JSON response.
-    Fields are chosen to give the frontend everything needed to render a news card.
+    Represents an article that has passed the crime-relevance filter but
+    has not yet been through the post-processing enrichment stage.
     """
 
-    # --- Identity ---
-    id: int                     # Database primary key — useful for fetching a specific article
-    source_id: int              # Which source this came from (join to sources table if needed)
+    id: int
+    raw_ingestion_id: int | None    # FK to raw_ingestion row that produced this
 
-    # --- Card content ---
-    title: str                  # Article headline (always present)
-    description: str | None     # Raw description from the source feed (may be messy HTML)
-    content: str | None         # Full article body (currently always None — future use)
-    url: str                    # "Read full article" link to the original website
-    image_url: str | None       # Thumbnail for the news card
+    title: str
+    description: str | None
+    image_url: str | None
+    main_url: str               # canonical URL on the source website
 
-    # When the article was published on the source website.
-    # datetime | None because some sources don't provide publish dates.
     published_at: datetime | None
+    created_at: datetime
 
-    # --- AI Enrichment fields ---
-    # These are populated by the LangGraph enrichment agent.
-    # They may be None for older articles ingested before AI was configured.
+    sub_category_id: int | None     # Legacy single FK (kept for backward compat)
+    sub_category_ids: list | None   # Multi-label JSONB array of sub_category IDs
+    location_state_id: int | None   # FK to state table (resolved from AI location)
 
-    category: str | None        # Always "crime" for articles that passed the filter
-    sub_category: str | None    # Crime type: murder, theft, fraud, cybercrime, etc.
-    importance_score: int | None  # 1-10 priority (10 = breaking news, 1 = minor local)
-
-    # AI-written 2-3 sentence summary for the news card preview.
-    # More readable than the raw description from the RSS feed.
-    summary: str | None
-
-    # Where the crime happened, e.g. "Mumbai, India"
-    location: str | None
-
-    # Broad region for filtering: "South Asia", "Europe", "North America", etc.
-    region: str | None
-
-    # --- Timestamps ---
-    created_at: datetime        # When this article was first saved in OUR database
-
-    # from_attributes=True: allows Pydantic to read from SQLAlchemy ORM objects.
-    # Without this, you'd have to manually convert Article objects to dicts first.
     model_config = {"from_attributes": True}
 
 
-class ArticleListResponse(BaseModel):
-    """Schema for the paginated list of articles returned by GET /articles/.
+class PostProcessedArticleResponse(BaseModel):
+    """Response schema for a stage-2 post-processed article.
 
-    Wraps a list of ArticleResponse with pagination metadata so the frontend
-    knows how many total results exist and can implement "load more" or page numbers.
+    This is the fully enriched article. The frontend may display this
+    or the final_articles (ranked) feed depending on the use case.
     """
-    total: int                      # Total articles in the DB (for pagination UI)
-    limit: int                      # How many were requested (e.g. 20)
-    offset: int                     # How many were skipped (e.g. 40 = page 3)
-    items: list[ArticleResponse]    # The actual articles for this page
+
+    id: int
+    filter_article_id: int | None   # FK to filter_articles row
+
+    title: str
+    description: str | None         # AI-rewritten summary from stage 2
+    image_url: str | None
+    reference_urls: list[str] | None  # related source URLs from stage 2
+
+    published_at: datetime | None
+    created_at: datetime
+
+    sub_category_id: int | None     # FK to master_sub_category
+    location_id: int | None         # FK to state
+
+    imp_score: int | None           # 1-100 importance score from stage 2 AI
+
+    model_config = {"from_attributes": True}
+
+
+# Backwards-compatible alias — existing code that imports ArticleResponse
+# continues to work; it now maps to PostProcessedArticleResponse.
+ArticleResponse = PostProcessedArticleResponse
+
+
+class FilterArticleListResponse(BaseModel):
+    """Paginated list response for GET /filter-articles/."""
+
+    total: int
+    limit: int
+    offset: int
+    items: list[FilterArticleResponse]
+
+
+class ArticleListResponse(BaseModel):
+    """Paginated list response for GET /articles/.
+
+    Wraps a list of PostProcessedArticleResponse with pagination metadata.
+    """
+
+    total: int                              # total rows in post_processed_articles
+    limit: int
+    offset: int
+    items: list[PostProcessedArticleResponse]
