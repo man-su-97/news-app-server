@@ -36,7 +36,7 @@ class AIProviderCreate(BaseModel):
             "**openai**: `gpt-4o-mini`  \n"
             "**custom**: your model name as configured in the server"
         ),
-        examples=["gemini-2.0-flash"],
+        examples=["gemini-2.5-flash"],
     )
 
     api_key: str = Field(
@@ -53,68 +53,20 @@ class AIProviderCreate(BaseModel):
             "**gemini** is pre-filled automatically if omitted.  \n"
             "Leave `null` for anthropic, openai, gemini_langgraph."
         ),
-        examples=[None],
     )
 
     model_config = {
         "json_schema_extra": {
-            "examples": [
-                {
-                    "summary": "Gemini Multimodal LangGraph (recommended)",
-                    "value": {
-                        "name": "My Gemini Multimodal",
-                        "provider": "gemini_multimodal",
-                        "model": "gemini-2.0-flash",
-                        "api_key": "AIzaSy...",
-                        "base_url": None,
-                    },
-                },
-                {
-                    "summary": "Gemini LangGraph",
-                    "value": {
-                        "name": "My Gemini Flash",
-                        "provider": "gemini_langgraph",
-                        "model": "gemini-2.0-flash",
-                        "api_key": "AIzaSy...",
-                        "base_url": None,
-                    },
-                },
-                {
-                    "summary": "Anthropic Claude",
-                    "value": {
-                        "name": "My Claude Haiku",
-                        "provider": "anthropic",
-                        "model": "claude-haiku-4-5-20251001",
-                        "api_key": "sk-ant-...",
-                        "base_url": None,
-                    },
-                },
-                {
-                    "summary": "OpenAI GPT",
-                    "value": {
-                        "name": "My GPT-4o Mini",
-                        "provider": "openai",
-                        "model": "gpt-4o-mini",
-                        "api_key": "sk-...",
-                        "base_url": None,
-                    },
-                },
-                {
-                    "summary": "Custom / Ollama",
-                    "value": {
-                        "name": "Local Llama3",
-                        "provider": "custom",
-                        "model": "llama3.2",
-                        "api_key": "ollama",
-                        "base_url": "http://localhost:11434/v1",
-                    },
-                },
-            ]
+            "example": {
+                "name": "Gemini 2.5 Flash",
+                "provider": "gemini",
+                "model": "gemini-2.5-flash",
+                "api_key": "AIzaSy...",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+            }
         }
     }
 
-    # model_validator runs AFTER all fields are validated.
-    # This cross-field validation checks: if provider="custom", base_url must be set.
     @model_validator(mode="after")
     def validate_custom_needs_base_url(self) -> "AIProviderCreate":
         if self.provider == "custom" and not self.base_url:

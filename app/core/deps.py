@@ -1,15 +1,3 @@
-"""
-app/core/deps.py — Dependency Injection Wiring
-===============================================
-FastAPI uses a "Dependency Injection" system: instead of creating objects
-inside your route handlers, you declare what you need as function parameters,
-and FastAPI creates them for you.
-
-All repositories share the SAME db session per request — this means writes
-from ingestion_service (raw_ingestion + filtered_articles + post_processed_articles)
-all participate in the same database transaction.
-"""
-
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +18,12 @@ from app.services.ingestion_service import IngestionService
 
 async def get_source_repo(db: AsyncSession = Depends(get_db)) -> SourceRepository:
     return SourceRepository(db)
+
+
+async def get_filter_article_repo(
+    db: AsyncSession = Depends(get_db),
+) -> FilterArticleRepository:
+    return FilterArticleRepository(db)
 
 
 async def get_post_processed_repo(
@@ -71,11 +65,6 @@ async def get_state_repo(
 async def get_ingestion_service(
     db: AsyncSession = Depends(get_db),
 ) -> IngestionService:
-    """Create an IngestionService with all required repositories.
-
-    All repositories share the SAME db session so all writes (raw_ingestion,
-    filtered_articles, post_processed_articles) are in the same transaction.
-    """
     return IngestionService(
         source_repo=SourceRepository(db),
         raw_repo=RawIngestionRepository(db),
@@ -84,3 +73,18 @@ async def get_ingestion_service(
         ai_provider_repo=AIProviderRepository(db),
         db=db,
     )
+
+
+# Route
+#    ↓
+# Service (business logic)
+#    ↓
+# Repositories (data access)
+#    ↓
+# DB session
+#    ↓
+# Engine
+#    ↓
+# PostgreSQL
+
+# And this deps.py file wires them together.

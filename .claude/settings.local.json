@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python3:*)",
+      "Bash(cat:*)",
+      "Bash(PGPASSWORD=5GNN2nJroI2v5w1KE psql:*)",
+      "Bash(.venv/bin/alembic upgrade:*)",
+      "Bash(python3:*)",
+      "Bash(/home/suman15135/Documents/projects/news_app_backend/.venv/bin/python3:*)",
+      "Bash(.venv/bin/alembic history:*)",
+      "Bash(curl:*)",
+      "Bash(kill 27627:*)"
+    ]
+  }
+}

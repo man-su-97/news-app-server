@@ -11,13 +11,19 @@ _SUPPORTED_SOURCE_TYPES = {"rss", "rest"}
 
 
 class IngestRequest(BaseModel):
-    source_id: int = Field(..., description="ID of the source to ingest", examples=[2])
+    source_id: int = Field(..., description="ID of the source to ingest — get IDs from GET /sources/")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {"source_id": 2}
+        }
+    }
 
 
 class IngestResponse(BaseModel):
     source_id: int
     source_type: str
-    ingested: int = Field(..., description="Number of articles written to the database")
+    ingested: int = Field(..., description="Number of new post-processed articles written")
 
 
 @router.post(

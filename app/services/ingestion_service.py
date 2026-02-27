@@ -1,27 +1,3 @@
-"""
-app/services/ingestion_service.py — Core Ingestion Pipeline
-============================================================
-Orchestrates the full pipeline from raw fetch to publication-ready articles.
-
-Pipeline (in order):
-  1. FETCH         Call RSSFetcher or RestFetcher to get raw items from the source
-  2. STORE RAW     Save every raw payload to raw_ingestion (idempotent dedup)
-                   Returns {content_hash: raw_ingestion_id} for FK linking
-  3. LOAD AI       Resolve which AI provider to use (DB config or env fallback)
-  4. AI FILTER     Concurrently call AI for each item — classify + extract fields
-  5. SPLIT         Separate crime articles from non-crime/failed ones
-  6. FILTER STAGE  Insert crime articles into filter_articles
-                   Returns {main_url: filter_article_id} for FK linking
-  7. POST STAGE    Insert enriched articles into post_processed_articles
-  8. AUDIT         Update raw_ingestion statuses (filtered / filtered_out / failed)
-
-Key design decisions:
-  - SINGLE AI CALL per article — extracts fields AND classifies in one prompt
-  - CONCURRENT processing with asyncio.Semaphore + rate limiter
-  - BEST-EFFORT: failure on one article never drops others
-  - IDEMPOTENT: running the same source twice safely upserts, never duplicates
-"""
-
 import asyncio
 import logging
 import time as _time
@@ -47,12 +23,39 @@ from app.services.source_normalizer import to_plain_dict
 logger = logging.getLogger(__name__)
 
 
+_CRIME_KEYWORDS: frozenset[str] = frozenset({
+    "murder", "kill", "killed", "killing", "dead", "death", "dies", "died",
+    "shoot", "shot", "gun", "firing", "stabbed", "stab", "knife",
+    "assault", "attack", "attacked", "beat", "beaten", "torture",
+    "rape", "molestation", "molest", "sexual assault",
+    "arrest", "arrested", "police", "fir", "remand", "custody",
+    "jail", "prison", "bail", "convicted", "sentenced", "charged",
+    "court", "verdict", "accused", "detained", "detained",
+    "robbery", "robbed", "theft", "stolen", "steal", "loot", "burglary",
+    "fraud", "scam", "cheated", "embezzle",
+    "terror", "terrorist", "bomb", "blast", "explosion",
+    "drug", "narco", "trafficking", "smuggl",
+    "kidnap", "abduct", "hostage",
+    "extort", "ransom",
+    "gang", "mob", "cartel",
+    "corrupt", "bribe",
+    "hack", "cyber crime", "cybercrime",
+    "crime", "criminal", "victim", "suspect", "perpetrator",
+    "violence", "violent", "offence", "offense",
+})
+
+
+def _has_crime_keywords(raw: dict) -> bool:
+    text = " ".join(filter(None, [
+        str(raw.get("title", "")),
+        str(raw.get("summary", "")),
+        str(raw.get("description", "")),
+        str(raw.get("content", "")),
+    ])).lower()
+    return any(kw in text for kw in _CRIME_KEYWORDS)
+
+
 class _RateLimiter:
-    """Enforces a minimum interval between AI API calls.
-
-    rpm=0 means unlimited — no delay applied (paid plans).
-    """
-
     def __init__(self, rpm: int) -> None:
         self._interval = (60.0 / rpm) if rpm > 0 else 0.0
         self._lock = asyncio.Lock()
@@ -87,37 +90,20 @@ def _concurrency_from_rpm(rpm: int) -> int:
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
-    """Detect rate limit / quota errors from any AI provider.
-
-    Covers: HTTP 429, Gemini ResourceExhausted, OpenAI rate limit strings.
-    """
     msg = str(exc).lower()
     return any(kw in msg for kw in (
         "429", "rate limit", "quota",
-        "resource_exhausted",   # with underscore (some wrappers)
-        "resourceexhausted",    # google.api_core camelCase lowercased
+        "resource_exhausted",
+        "resourceexhausted",
         "too many requests",
     ))
 
 
-# ---- Process-level singletons -----------------------------------------------
-# ONE rate limiter and semaphore for the entire process, shared across ALL
-# concurrent ingestion runs (multiple sources via asyncio.gather in the scheduler)
-# AND across both pipeline stages (filter + post-process).
-#
-# Why global?
-#   The scheduler runs sources concurrently. Without a shared limiter, N sources
-#   each create their own _RateLimiter and fire at N× the intended RPM — blowing
-#   through the free-tier quota in minutes.
-#
-# Lazily initialized on first async call so asyncio primitives bind to the
-# running event loop (Python 3.10+ handles this correctly).
 _global_rate_limiter: "_RateLimiter | None" = None
 _global_semaphore: "asyncio.Semaphore | None" = None
 
 
 def _get_global_limiter() -> tuple["_RateLimiter", asyncio.Semaphore]:
-    """Return (or lazily create) the shared process-level limiter + semaphore."""
     global _global_rate_limiter, _global_semaphore
     if _global_rate_limiter is None:
         rpm = settings.AI_REQUESTS_PER_MINUTE
@@ -135,12 +121,6 @@ def _get_global_limiter() -> tuple["_RateLimiter", asyncio.Semaphore]:
 
 
 class IngestionService:
-    """Orchestrates the fetch → AI filter → store pipeline for one source.
-
-    Constructor takes all required repositories — no raw DB sessions here.
-    This keeps the service testable: tests can pass mock repos.
-    """
-
     def __init__(
         self,
         source_repo: SourceRepository,
@@ -155,35 +135,38 @@ class IngestionService:
         self.filter_article_repo = filter_article_repo
         self.post_processed_repo = post_processed_repo
         self.ai_provider_repo = ai_provider_repo
-        self._db = db   # used to load resolvers once per ingest run
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
+        self._db = db
 
     async def ingest(self, source: Source) -> int:
-        """Run the full ingestion pipeline for one source.
-
-        Returns the count of post_processed_articles rows written.
-        Called by POST /ingest/ and the scheduler.
-        """
-        # Step 1: FETCH
+        """Run the full ingestion pipeline for one source. Returns post_processed count."""
         raw_items = await self._fetch_items(source)
         if not raw_items:
             logger.info("No items fetched from source_id=%s", source.id)
             return 0
 
-        # Step 2: STORE RAW — dual-write before any AI processing
-        hash_to_raw_id: dict[str, int] = {}
-        if self.raw_repo:
-            hash_to_raw_id = await self.raw_repo.store_batch(source.id, raw_items)
+        if len(raw_items) > settings.AI_MAX_ITEMS_PER_RUN:
             logger.debug(
-                "raw_ingestion: stored %d hashes for source_id=%s",
-                len(hash_to_raw_id),
-                source.id,
+                "Capping fetch from %d → %d items — source_id=%s",
+                len(raw_items), settings.AI_MAX_ITEMS_PER_RUN, source.id,
+            )
+            raw_items = raw_items[: settings.AI_MAX_ITEMS_PER_RUN]
+
+        # Compute hashes once — reused for store_batch and all downstream filtering.
+        all_pairs: list[tuple[str, dict]] = [
+            (compute_content_hash(source.id, raw), raw) for raw in raw_items
+        ]
+
+        hash_to_raw_id: dict[str, int] = {}
+        unprocessed_hashes: set[str] = set()
+        if self.raw_repo:
+            hash_to_raw_id, unprocessed_hashes = await self.raw_repo.store_batch(
+                source.id, all_pairs
+            )
+            logger.info(
+                "[RAW_SAVE] %d stored (%d to process) — source_id=%s",
+                len(hash_to_raw_id), len(unprocessed_hashes), source.id,
             )
 
-        # Step 3: LOAD AI PROVIDER
         ai_provider = await self._load_ai_provider()
         if ai_provider is None:
             logger.warning(
@@ -193,15 +176,47 @@ class IngestionService:
             )
             return 0
 
-        # Build (content_hash, raw_payload) pairs — content_hash links to raw_ingestion
-        items = [(compute_content_hash(source.id, raw), raw) for raw in raw_items]
+        # Filter to only articles that need processing (new + previously stuck-pending).
+        new_pairs = [(ch, raw) for ch, raw in all_pairs if ch in unprocessed_hashes]
 
-        # Step 4: AI FILTER — concurrent, rate-limited
-        # Use the shared process-level limiter so all concurrent sources
-        # (scheduler runs them in parallel) count against the same quota.
+        if not new_pairs:
+            logger.info(
+                "No new articles to process — source_id=%s (all %d already seen)",
+                source.id, len(all_pairs),
+            )
+            return 0
+
+        # Single-pass keyword filter — avoids calling _has_crime_keywords twice per article.
+        items: list[tuple[str, dict]] = []
+        pre_filtered_hashes: list[str] = []
+        for ch, raw in new_pairs:
+            if _has_crime_keywords(raw):
+                items.append((ch, raw))
+            else:
+                pre_filtered_hashes.append(ch)
+
+        if pre_filtered_hashes:
+            logger.info(
+                "Keyword pre-filter: %d/%d skipped (no crime keywords) — source_id=%s",
+                len(pre_filtered_hashes), len(new_pairs), source.id,
+            )
+
+        if not items:
+            if self.raw_repo and pre_filtered_hashes:
+                await self.raw_repo.mark_filtered_out(
+                    source.id, pre_filtered_hashes, ai_provider.model_id
+                )
+            logger.info(
+                "No crime-keyword articles to AI-process — source_id=%s", source.id
+            )
+            return 0
+
         rate_limiter, semaphore = _get_global_limiter()
 
-        logger.info("AI processing: %d articles — source_id=%s", len(items), source.id)
+        logger.info(
+            "[AI_EXTRACT] %d articles queued for AI — source_id=%s",
+            len(items), source.id,
+        )
 
         async def process_with_semaphore(
             content_hash: str, raw: dict
@@ -216,10 +231,9 @@ class IngestionService:
             return_exceptions=True,
         )
 
-        # Step 5: SPLIT into buckets
         crime_articles: list[dict] = []
-        filtered_hashes: dict[str, list[str]] = defaultdict(list)  # model_id → hashes
-        filtered_out_hashes: list[str] = []
+        filtered_hashes: dict[str, list[str]] = defaultdict(list)
+        filtered_out_hashes: list[str] = list(pre_filtered_hashes)
         failed_hashes: list[str] = []
 
         for i, result in enumerate(results):
@@ -241,7 +255,6 @@ class IngestionService:
                 filtered_out_hashes.append(content_hash)
                 continue
 
-            # Attach the content_hash so filter_article_repo can look up raw_ingestion_id
             article["content_hash"] = content_hash
             crime_articles.append(article)
             filtered_hashes[ai_provider.model_id].append(content_hash)
@@ -254,8 +267,7 @@ class IngestionService:
             source.id,
         )
 
-        # Step 5b: RESOLVE FKs — translate AI strings to DB ids (one DB query each)
-        # Gracefully skip if no DB session available (test/legacy callers).
+        # Resolve category and location FKs from AI string labels to DB integer IDs.
         cat_resolver: CategoryResolver | None = None
         loc_resolver: LocationResolver | None = None
         if self._db is not None and crime_articles:
@@ -267,60 +279,44 @@ class IngestionService:
         if crime_articles and (cat_resolver or loc_resolver):
             for article in crime_articles:
                 if cat_resolver:
-                    # Multi-label JSONB array — resolve each AI string to a DB id
-                    # Used for filtered_articles.sub_category_ids
                     article["sub_category_ids"] = cat_resolver.resolve_all(
                         article.get("sub_category_ids", [])
                     )
-                    # Parent category IDs derived from sub_category_ids
-                    # Used for filtered_articles.category_ids
                     article["category_ids"] = cat_resolver.resolve_categories_from_ids(
                         article["sub_category_ids"]
                     )
-                    # Single best-match FK used by post_processed_articles.sub_category_id
                     article["sub_category_id"] = cat_resolver.resolve(
                         article.get("sub_category")
                     )
                 if loc_resolver:
                     state_id = loc_resolver.resolve(article.get("location"))
                     article["location_id"] = state_id
-                    article["location_state_id"] = state_id  # also for filter_articles
+                    article["location_state_id"] = state_id
 
-        # Step 5c: STAGE 2 — AI post-processing for crime articles
-        # Makes a second AI call per crime article to:
-        #   - Rewrite title and description for publication quality
-        #   - Discover reference URLs (via web search in supported providers)
-        #   - Assign a 1-100 importance score (finer than stage 1's 1-10)
-        if crime_articles:
-            crime_articles = await self._run_post_processing(
-                crime_articles, ai_provider, rate_limiter, semaphore
-            )
-
-        # Step 6: FILTER STAGE — write to filter_articles
         url_to_filter_id: dict[str, int] = {}
         if crime_articles and self.filter_article_repo:
             url_to_filter_id = await self.filter_article_repo.insert_batch(
                 crime_articles, hash_to_raw_id
             )
-            logger.debug(
+            logger.info(
                 "filter_articles: %d rows written — source_id=%s",
                 len(url_to_filter_id),
                 source.id,
             )
 
-        # Step 7: POST-PROCESSING STAGE — write to post_processed_articles
         count = 0
         if crime_articles and self.post_processed_repo and url_to_filter_id:
             count = await self.post_processed_repo.insert_batch(
                 crime_articles, url_to_filter_id
             )
-            logger.debug(
-                "post_processed_articles: %d rows written — source_id=%s",
+            scored = sum(1 for a in crime_articles if a.get("imp_score") is not None)
+            logger.info(
+                "post_processed_articles: %d written, %d scored — source_id=%s",
                 count,
+                scored,
                 source.id,
             )
 
-        # Step 8: AUDIT — update raw_ingestion statuses (best-effort)
         if self.raw_repo:
             await self._update_raw_statuses(
                 source_id=source.id,
@@ -339,15 +335,7 @@ class IngestionService:
         )
         return count
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
-
     async def _load_ai_provider(self) -> AIProvider | None:
-        """Resolve the AI provider.
-
-        Priority: DB active config → GEMINI_API_KEY env → ANTHROPIC_API_KEY env → None
-        """
         if self.ai_provider_repo is not None:
             try:
                 config = await self.ai_provider_repo.get_active()
@@ -360,7 +348,6 @@ class IngestionService:
         return get_env_fallback_provider()
 
     async def _fetch_items(self, source: Source) -> list[dict]:
-        """Fetch raw items from the source using the appropriate fetcher."""
         try:
             if source.type == "rss":
                 feed = await RSSFetcher().fetch(source.url)
@@ -377,11 +364,6 @@ class IngestionService:
             return []
 
     async def _call_with_retry(self, coro_fn, label: str) -> dict | None:
-        """Call coro_fn() with exponential backoff on rate limit / quota errors.
-
-        Uses AI_RETRY_ATTEMPTS and AI_RETRY_DELAY_SECONDS from config.
-        Non-rate-limit errors are logged and returned as None immediately.
-        """
         delay = settings.AI_RETRY_DELAY_SECONDS
         for attempt in range(settings.AI_RETRY_ATTEMPTS):
             try:
@@ -405,7 +387,6 @@ class IngestionService:
         source_type: str,
         ai_provider: AIProvider,
     ) -> dict | None:
-        """Run one article through the AI provider. Retries on rate limit errors."""
         article = await self._call_with_retry(
             lambda: ai_provider.process(raw, source_type),
             "ai_provider.process",
@@ -413,131 +394,29 @@ class IngestionService:
         if article is None:
             return None
 
+        # Non-crime articles have no URL; pass them through so the gather loop
+        # can correctly classify them as filtered_out (not failed).
+        if not article.get("is_crime", True):
+            return article
+
         url = article.get("url", "")
         if not url or not url.startswith(("http://", "https://")):
             logger.warning(
-                "AI returned article without valid URL — dropping: %r",
+                "AI returned crime article without valid URL — dropping: %r",
                 article.get("title", "")[:60],
             )
             return None
 
         return article
 
-    async def _run_post_processing(
-        self,
-        crime_articles: list[dict],
-        ai_provider: AIProvider,
-        rate_limiter: "_RateLimiter",
-        semaphore: asyncio.Semaphore,
-    ) -> list[dict]:
-        """Run stage 2 post-processing concurrently for all crime articles.
-
-        For each crime article:
-          1. DuckDuckGo search (outside AI rate limiter) — finds similar news articles
-             whose URLs will be stored as reference_urls for the frontend "read more" links.
-          2. AI post_process() call (rate-limited) — rewrites title/description,
-             extracts reference_urls from search context, computes imp_score 1-100.
-
-        Uses the SAME rate_limiter and semaphore as stage 1 for the AI call only.
-        DuckDuckGo is free and not rate-limited by the AI quota.
-
-        Returns the same list with stage 2 fields merged in where available:
-          - rewritten_title, rewritten_description, stage2_reference_urls, imp_score
-        """
-        # Initialise DuckDuckGo search tool once — reused for all articles.
-        # GeminiLangGraphProvider does its own search inside post_process(); passing
-        # a non-empty search_context causes it to skip its internal search (no double-search).
-        _search_tool = None
-        try:
-            from langchain_community.tools import DuckDuckGoSearchResults
-            _search_tool = DuckDuckGoSearchResults(max_results=5)
-        except Exception as exc:
-            logger.warning("DuckDuckGo search unavailable — reference_urls will be empty: %s", exc)
-
-        async def _search_for_article(title: str) -> str:
-            """Run DuckDuckGo for a single article title. Returns result string or ''.
-
-            Wrapped in asyncio.wait_for to prevent a slow/hung DuckDuckGo
-            response from blocking the entire ingestion pipeline indefinitely.
-            """
-            if not _search_tool or not title:
-                return ""
-            try:
-                results = await asyncio.wait_for(
-                    _search_tool.ainvoke(f"{title} crime news"),
-                    timeout=settings.DUCKDUCKGO_TIMEOUT_SECONDS,
-                )
-                return str(results)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "DuckDuckGo search timed out after %.0fs for title=%r",
-                    settings.DUCKDUCKGO_TIMEOUT_SECONDS,
-                    title[:60],
-                )
-                return ""
-            except Exception as exc:
-                logger.warning("DuckDuckGo search failed (non-fatal): %s", exc)
-                return ""
-
-        async def post_process_one(article: dict) -> dict:
-            # Step 1: web search — runs OUTSIDE the AI semaphore (not an AI call)
-            search_context = await _search_for_article(article.get("title", ""))
-
-            # Step 2: AI post-processing — rate-limited
-            # Use default-arg capture (a=article, sc=search_context) to bind
-            # the current values at lambda creation time (avoids closure pitfall).
-            async with semaphore:
-                await rate_limiter.wait()
-                result = await self._call_with_retry(
-                    lambda a=article, sc=search_context: ai_provider.post_process(a, sc),
-                    "ai_provider.post_process",
-                )
-
-            if result:
-                article["rewritten_title"] = result.get("rewritten_title")
-                article["rewritten_description"] = result.get("rewritten_description")
-                article["stage2_reference_urls"] = result.get("reference_urls") or []
-                article["imp_score"] = result.get("imp_score")
-                logger.debug(
-                    "Stage 2 done: imp_score=%s ref_urls=%d title=%r",
-                    article["imp_score"],
-                    len(article["stage2_reference_urls"]),
-                    (article.get("rewritten_title") or article["title"])[:60],
-                )
-            return article
-
-        updated = await asyncio.gather(
-            *[post_process_one(a) for a in crime_articles],
-            return_exceptions=True,
-        )
-
-        # Return only successful results; re-use original on exception
-        final = []
-        for i, item in enumerate(updated):
-            if isinstance(item, Exception):
-                logger.error(
-                    "post_processing gather error for article %d: %s", i, item
-                )
-                final.append(crime_articles[i])   # keep original stage 1 data
-            else:
-                final.append(item)
-
-        scored = sum(1 for a in final if a.get("imp_score") is not None)
-        logger.info(
-            "Stage 2 complete: %d/%d articles scored — source run",
-            scored, len(final),
-        )
-        return final
-
     async def _update_raw_statuses(
         self,
         source_id: int,
-        filtered: dict[str, list[str]],      # {model_id: [hashes]}
+        filtered: dict[str, list[str]],
         filtered_out: list[str],
         failed: list[str],
         model_id: str,
     ) -> None:
-        """Update raw_ingestion rows with pipeline outcome. Best-effort."""
         try:
             if filtered:
                 await self.raw_repo.mark_filtered(source_id, filtered)

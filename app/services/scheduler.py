@@ -1,25 +1,3 @@
-"""
-app/services/scheduler.py — Background Job Scheduler
-=====================================================
-Runs the full pipeline automatically every 5 minutes.
-
-Two scheduled jobs:
-  1. ingestion_all_sources — fetch + AI filter + AI post-process for every active source
-  2. publish_final_feed    — select top-ranked articles and upsert into final_articles
-                             (runs 30 seconds after ingestion completes, every 5 minutes)
-
-Architecture:
-  - APScheduler (AsyncIOScheduler) integrates with Python's asyncio event loop.
-  - Each source gets its OWN database session to avoid one slow source blocking others.
-  - asyncio.gather() runs all sources CONCURRENTLY — fetching N sources takes as long
-    as the SLOWEST single source (not N× longer).
-  - max_instances=1 prevents job pile-up if a previous run is still in progress.
-
-Scheduler lifecycle:
-  - start_scheduler() called in app/main.py lifespan startup hook
-  - stop_scheduler() called in the lifespan shutdown hook
-"""
-
 import asyncio
 import logging
 
@@ -42,17 +20,6 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 async def run_ingestion_for_all_active_sources() -> None:
-    """Fetch and process every active source concurrently.
-
-    Full pipeline per source:
-      Fetch raw items → store raw_ingestion → AI stage 1 (filter + classify)
-      → store filter_articles → AI stage 2 (rewrite + score) → store post_processed_articles
-
-    Session strategy:
-      Step 1: ONE session to load the source list, then close it.
-      Step 2: Per-source SEPARATE session for full ingestion.
-      Why separate? Isolates DB transactions and avoids long-lived sessions.
-    """
     logger.info("Scheduled ingestion run starting")
 
     async with AsyncSessionLocal() as db:
@@ -81,14 +48,12 @@ async def run_ingestion_for_all_active_sources() -> None:
         "Scheduled ingestion complete: %d sources OK, %d failed", ok, failed
     )
 
+    if ok > 0:
+        logger.info("Triggering publish after ingestion completed")
+        await run_publishing()
+
 
 async def _ingest_one_source(source) -> int:
-    """Run the full ingestion pipeline for ONE source in its own DB session.
-
-    Opens a dedicated session, creates the full IngestionService with all
-    required repositories (raw, filter, post-processed, AI provider), runs
-    the pipeline, and returns the count of post_processed_articles written.
-    """
     async with AsyncSessionLocal() as db:
         svc = IngestionService(
             source_repo=SourceRepository(db),
@@ -96,7 +61,7 @@ async def _ingest_one_source(source) -> int:
             filter_article_repo=FilterArticleRepository(db),
             post_processed_repo=PostProcessedArticleRepository(db),
             ai_provider_repo=AIProviderRepository(db),
-            db=db,   # needed for CategoryResolver + LocationResolver queries
+            db=db,
         )
         count = await svc.ingest(source)
         logger.info(
@@ -107,16 +72,6 @@ async def _ingest_one_source(source) -> int:
 
 
 async def run_publishing() -> None:
-    """Compute rank_scores and upsert the top 20 articles into final_articles.
-
-    Called 30 seconds after ingestion (via separate job) so that fresh
-    post_processed_articles are available for ranking.
-
-    PublishingService:
-      1. Loads top 20 post_processed_articles by imp_score (non-null only)
-      2. Applies time-decay to compute rank_score for each
-      3. Upserts into final_articles — the public news feed table
-    """
     logger.info("Scheduled publishing run starting")
     async with AsyncSessionLocal() as db:
         svc = PublishingService(
@@ -128,15 +83,6 @@ async def run_publishing() -> None:
 
 
 def start_scheduler() -> None:
-    """Register ingestion + publishing jobs and start the scheduler.
-
-    Job 1 (ingestion_all_sources): every 5 minutes, max 1 concurrent instance.
-    Job 2 (publish_final_feed):    every 5 minutes, offset 30s from ingestion,
-                                    max 1 concurrent instance.
-
-    The 30-second offset gives ingestion time to write post_processed_articles
-    before publishing tries to read them.
-    """
     scheduler.add_job(
         run_ingestion_for_all_active_sources,
         trigger="interval",
@@ -164,6 +110,5 @@ def start_scheduler() -> None:
 
 
 def stop_scheduler() -> None:
-    """Stop the scheduler gracefully on server shutdown."""
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped")

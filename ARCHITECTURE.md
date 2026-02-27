@@ -1,1258 +1,990 @@
-# Crime News Aggregator Backend — Architecture Reference
+# Crime News API — Architecture Guide
 
-This document is the single source of truth for anyone reading or extending this codebase.
-It covers every file, every layer, the full data flow, and the database schema.
+> Complete reference for this codebase: every file, every layer, the full AI
+> pipeline, and a step-by-step trace of every type of user request.
 
 ---
 
 ## Table of Contents
 
-1. [Project Purpose](#1-project-purpose)
+1. [What This App Does](#1-what-this-app-does)
 2. [Tech Stack](#2-tech-stack)
-3. [Directory Structure](#3-directory-structure)
-4. [Architectural Philosophy](#4-architectural-philosophy)
-5. [Layer-by-Layer Breakdown](#5-layer-by-layer-breakdown)
-   - [Entry Point](#51-entry-point--appmainpy)
-   - [Core](#52-core-layer--appcore)
-   - [Models](#53-models-layer--appmodels)
-   - [Repositories](#54-repository-layer--apprepositories)
-   - [Schemas](#55-schema-layer--appschemas)
-   - [Services](#56-service-layer--appservices)
-   - [API Routes](#57-api-layer--appapi)
-   - [Migrations](#58-migrations)
-6. [Full Data Flow](#6-full-data-flow)
-7. [Database Schema](#7-database-schema)
-8. [AI Pipeline Deep Dive](#8-ai-pipeline-deep-dive)
-9. [Background Scheduler](#9-background-scheduler)
+3. [Project Structure — Every File Explained](#3-project-structure--every-file-explained)
+4. [Database Schema](#4-database-schema)
+5. [Pipeline — Bird's Eye View](#5-pipeline--birds-eye-view)
+6. [Service Layer — Deep Dive](#6-service-layer--deep-dive)
+7. [How the AI Works](#7-how-the-ai-works)
+8. [Request Flows — End to End](#8-request-flows--end-to-end)
+9. [API Reference & Usage Guide](#9-api-reference--usage-guide)
 10. [Configuration Reference](#10-configuration-reference)
-11. [Development Commands](#11-development-commands)
+11. [Adding a New Provider](#11-adding-a-new-provider)
 
 ---
 
-## 1. Project Purpose
+## 1. What This App Does
 
-An automated backend that:
+An **automated AI-powered crime news aggregator** for India.
 
-- Pulls crime news articles from **RSS feeds** and **REST APIs** on a 5-minute schedule
-- Runs every article through a **two-stage AI pipeline**:
-  - **Stage 1 — Filter**: classifies crime type, extracts structured fields, resolves location
-  - **Stage 2 — Post-process**: rewrites title/description in original language, scores importance 1–100, discovers reference URLs via web search
-- Ranks and publishes the **top N articles** into a curated feed using importance score × time-decay
-- Exposes a clean **REST API** for a frontend to consume
+Every 5 minutes the scheduler:
+1. Fetches articles from all active RSS/REST sources
+2. Deduplicates them by SHA-256 hash — the same article is never processed twice
+3. Pre-filters using a ~50-keyword crime keyword list — skips ~70 % of articles from general sources (BBC, TOI) before any AI call
+4. Sends remaining articles concurrently to the configured AI provider, which in a **single call**:
+   - Decides if the article is crime-related (non-crime → discard immediately, near-zero tokens)
+   - Extracts: original title, URL, description, image, published date
+   - Rewrites the title and description in original words (plagiarism-safe)
+   - Assigns an importance score 1–100 based on severity, scope, and public impact
+   - Labels one or more crime sub-categories (murder, fraud, terrorism, …)
+   - Resolves the location (city/state → Indian state DB FK)
+5. Stores crime articles in two pipeline tables (`filtered_articles` → `post_processed_articles`)
+6. Runs a publishing job every 5 minutes that picks the top 20 articles, applies time-decay, and upserts them into `final_articles` — the public ranked feed
 
 ---
 
 ## 2. Tech Stack
 
-| Library | Role |
-|---------|------|
-| **FastAPI** | Web framework — async, automatic OpenAPI/Swagger docs, Pydantic DI |
-| **SQLAlchemy 2.0** | Async ORM — typed `Mapped[]` columns, JSONB support, Alembic integration |
-| **asyncpg** | Async PostgreSQL driver (required by SQLAlchemy async engine) |
-| **Pydantic v2** | Request/response validation and serialisation |
-| **pydantic-settings** | `.env` loading with type validation — fails loudly on missing vars |
-| **APScheduler** | `AsyncIOScheduler` — runs ingestion + publishing jobs every 5 minutes |
-| **feedparser** | Parses RSS/Atom feeds, handles malformed XML gracefully |
-| **httpx** | Async HTTP client for REST source fetching |
-| **anthropic** | Official Anthropic SDK for Claude models |
-| **openai** | OpenAI Python SDK — used for GPT and Gemini OpenAI-compatible endpoints |
-| **langchain / langgraph** | LangGraph agent graph for Gemini providers; structured output, tool use |
-| **langchain-google-genai** | Gemini model integration for LangChain |
-| **langchain-community** | `DuckDuckGoSearchResults` tool for Stage 2 web search |
-| **Alembic** | Schema migrations — versioned, async-aware |
-| **uvicorn** | ASGI server to run FastAPI |
+| Layer | Technology |
+|---|---|
+| Web framework | FastAPI (async) |
+| ORM | SQLAlchemy 2.x async |
+| Database | PostgreSQL |
+| Migrations | Alembic |
+| Scheduler | APScheduler (AsyncIOScheduler) |
+| AI — primary | Gemini via OpenAI-compatible endpoint (`gemini` provider) |
+| AI — multimodal | Gemini Flash via LangChain + LangGraph structured output (`gemini_multimodal`) |
+| AI — langgraph | Gemini Flash via LangChain (`gemini_langgraph`) |
+| AI — anthropic | Anthropic SDK (`anthropic`) |
+| RSS fetching | feedparser (async) |
+| REST fetching | httpx |
+| Validation | Pydantic v2 |
+| Settings | pydantic-settings |
+| Python | 3.11+ (`.venv/bin/python3`) |
 
 ---
 
-## 3. Directory Structure
+## 3. Project Structure — Every File Explained
 
 ```
-news_app_backend/
+app/
+├── main.py                         # FastAPI app factory, router registration, lifespan
+├── core/
+│   ├── config.py                   # All settings read from .env (pydantic-settings)
+│   ├── database.py                 # AsyncEngine + AsyncSessionLocal + get_db()
+│   ├── deps.py                     # FastAPI dependency functions (wires repos + services)
+│   └── enums.py                    # SubCategoryEnum, CategoryEnum, lookup dicts
 │
-├── .env                                    # DATABASE_URL, GEMINI_API_KEY, etc.
-├── alembic.ini                             # Alembic config (URL injected at runtime)
-├── pyproject.toml                          # Dependencies
-├── ARCHITECTURE.md                         # This document
+├── models/                         # SQLAlchemy ORM table definitions
+│   ├── base.py                     # DeclarativeBase
+│   ├── source.py                   # news_sources table (Source model)
+│   ├── raw_event.py                # raw_ingestion table (RawIngestion model)
+│   ├── filter_article.py           # filtered_articles table (FilterArticle model)
+│   ├── post_processed_article.py   # post_processed_articles table
+│   ├── final_article.py            # final_articles table (public ranked feed)
+│   ├── ai_provider.py              # ai_provider_configs table
+│   ├── category.py                 # master_category + master_sub_category tables
+│   └── location.py                 # country + state tables
 │
-├── migrations/
-│   ├── env.py                              # Async-aware Alembic runner
-│   ├── script.py.mako                      # Template for new migration files
-│   └── versions/
-│       ├── 29df1b34_initial_schema.py
-│       ├── c8f2a1e3_add_raw_ingestion_events.py
-│       ├── d9e4f5a6_add_ai_provider_configs.py
-│       ├── e1f2a3b4_add_enrichment_fields.py
-│       ├── f2g3h4i5_add_article_card_fields.py
-│       ├── g3h4i5j6_widen_normalized_by.py
-│       ├── h4i5j6k7_pipeline_schema_redesign.py
-│       ├── i5j6k7l8_seed_master_data.py
-│       ├── j6k7l8m9_pipeline_enhancements.py
-│       ├── k7l8m9n0_filtered_articles_cleanup.py
-│       └── l8m9n0o1_performance_indexes.py  ← HEAD
+├── repositories/                   # Data access layer — one class per table
+│   ├── source_repo.py              # SourceRepository (CRUD for news_sources)
+│   ├── raw_ingestion_repo.py       # RawIngestionRepository (store_batch, mark_*)
+│   ├── filter_article_repo.py      # FilterArticleRepository (insert_batch, get_all)
+│   ├── post_processed_article_repo.py  # PostProcessedArticleRepository (insert_batch, get_top)
+│   ├── final_article_repo.py       # FinalArticleRepository (upsert_batch, get_feed)
+│   ├── ai_provider_repo.py         # AIProviderRepository (CRUD + activate)
+│   ├── master_data_repo.py         # MasterCategoryRepository, MasterSubCategoryRepository, StateRepository
+│   └── article_repo.py             # Thin alias: ArticleRepository = PostProcessedArticleRepository
 │
-└── app/
-    ├── main.py                             # FastAPI app, middleware, router registration
+├── schemas/                        # Pydantic request/response models
+│   ├── source_schema.py            # SourceCreate, SourceUpdate, SourceResponse
+│   ├── article_schema.py           # FilterArticleResponse, PostProcessedArticleResponse, list wrappers
+│   ├── final_article_schema.py     # FinalArticleResponse, FinalArticleListResponse
+│   ├── ai_provider_schema.py       # AIProviderCreate, AIProviderResponse, AIProviderActivateResponse
+│   └── master_data_schema.py       # MasterCategoryResponse, StateResponse
+│
+├── api/                            # HTTP route handlers
+│   ├── routes_sources.py           # GET/POST/PATCH/DELETE /sources/
+│   ├── routes_ingest.py            # POST /ingest/
+│   ├── routes_filter_articles.py   # GET /filter-articles/
+│   ├── routes_post_processed.py    # GET /post-processed/
+│   ├── routes_final_articles.py    # GET /final-articles/, POST /final-articles/publish
+│   ├── routes_ai_providers.py      # GET/POST/PATCH/DELETE /ai-providers/
+│   └── routes_master_data.py       # GET /master/categories, /master/states
+│
+└── services/                       # Business logic layer
+    ├── ingestion_service.py        # IngestionService — the main pipeline orchestrator
+    ├── publishing_service.py       # PublishingService — ranking + feed refresh
+    ├── scheduler.py                # APScheduler jobs (ingestion + publishing)
+    ├── source_normalizer.py        # to_plain_dict(), parse_date() — feed-agnostic dict conversion
+    ├── fetchers/
+    │   ├── rss_fetcher.py          # RSSFetcher — async feedparser wrapper
+    │   └── rest_fetcher.py         # RestFetcher — async httpx GET → list[dict]
+    └── normalization/
+        ├── ai_processor.py         # get_env_fallback_provider() — env-var AI resolution
+        ├── provider_factory.py     # create_from_config(), process-lifetime provider cache
+        ├── resolvers.py            # CategoryResolver, LocationResolver, load_resolvers()
+        ├── canonical_validator.py  # URL and field sanitisation helpers
+        └── providers/
+            ├── base.py             # AIProvider ABC, SINGLE_PROCESS_PROMPT, parse_single_output()
+            ├── openai_prov.py      # OpenAICompatibleProvider (OpenAI / Gemini / Ollama)
+            ├── gemini_langgraph_prov.py      # GeminiLangGraphProvider (LangChain simple)
+            ├── gemini_multimodal_prov.py     # GeminiMultimodalLangGraphProvider (RECOMMENDED)
+            └── anthropic_prov.py   # AnthropicProvider (Claude)
+```
+
+---
+
+## 4. Database Schema
+
+### Table flow
+
+```
+news_sources
     │
-    ├── core/
-    │   ├── config.py                       # All settings via pydantic-settings
-    │   ├── database.py                     # Async engine + session factory
-    │   ├── deps.py                         # FastAPI Depends factory functions
-    │   └── enums.py                        # CategoryEnum, SubCategoryEnum (static lookups)
-    │
-    ├── models/                             # SQLAlchemy ORM table definitions
-    │   ├── __init__.py                     # Imports all models (registers them with Base)
-    │   ├── base.py                         # Shared DeclarativeBase
-    │   ├── source.py                       # news_sources table
-    │   ├── raw_event.py                    # raw_ingestion table
-    │   ├── ai_provider.py                  # ai_provider_configs table
-    │   ├── category.py                     # master_category + master_sub_category tables
-    │   ├── location.py                     # country + state tables
-    │   ├── filter_article.py               # filtered_articles table (Stage 1 output)
-    │   ├── post_processed_article.py       # post_processed_articles table (Stage 2 output)
-    │   └── final_article.py                # final_articles table (ranked public feed)
-    │
-    ├── repositories/                       # All DB access — no business logic
-    │   ├── source_repo.py                  # CRUD for news_sources
-    │   ├── raw_ingestion_repo.py           # store_batch, mark_filtered/failed
-    │   ├── ai_provider_repo.py             # CRUD + activate for ai_provider_configs
-    │   ├── master_data_repo.py             # Read-only: categories, sub-categories, states
-    │   ├── filter_article_repo.py          # insert_batch + reads for filtered_articles
-    │   ├── post_processed_article_repo.py  # insert_batch + reads for post_processed_articles
-    │   ├── article_repo.py                 # Alias: ArticleRepository = PostProcessedArticleRepository
-    │   └── final_article_repo.py           # upsert_batch + ranked feed reads
-    │
-    ├── schemas/                            # Pydantic request/response contracts
-    │   ├── source_schema.py                # SourceCreate, SourceUpdate, SourceResponse
-    │   ├── ai_provider_schema.py           # AIProviderCreate, AIProviderResponse
-    │   ├── article_schema.py               # PostProcessedArticleResponse (+ alias)
-    │   ├── final_article_schema.py         # FinalArticleResponse, FinalArticleListResponse
-    │   └── master_data_schema.py           # Category, SubCategory, State responses
-    │
-    ├── services/
-    │   ├── scheduler.py                    # APScheduler: ingestion every 5min, publish every 5min
-    │   ├── ingestion_service.py            # Orchestrates the full two-stage pipeline
-    │   ├── publishing_service.py           # Ranks articles and writes final_articles feed
-    │   ├── source_normalizer.py            # Coerces raw feedparser/REST dicts to plain Python
-    │   ├── fetchers/
-    │   │   ├── rss_fetcher.py              # feedparser-based RSS/Atom fetcher
-    │   │   └── rest_fetcher.py             # httpx-based REST API fetcher
-    │   └── normalization/
-    │       ├── ai_processor.py             # Resolves which AI provider to use (DB → env fallback)
-    │       ├── provider_factory.py         # Instantiates + caches provider objects
-    │       ├── resolvers.py                # CategoryResolver (enum), LocationResolver (DB)
-    │       ├── canonical_validator.py      # Post-parse field validation helpers
-    │       └── providers/
-    │           ├── base.py                 # AIProvider ABC + prompts + Pydantic output models
-    │           ├── openai_prov.py          # OpenAI-compatible provider (GPT, Gemini REST, custom)
-    │           ├── anthropic_prov.py       # Anthropic Claude provider
-    │           ├── gemini_langgraph_prov.py     # Gemini + LangGraph agent
-    │           └── gemini_multimodal_prov.py    # Gemini multimodal + LangGraph (recommended)
-    │
-    └── api/                                # HTTP route handlers — thin controllers only
-        ├── routes_final_articles.py        # GET /final-articles/ (public feed)
-        ├── routes_master_data.py           # GET /master/categories|sub-categories|states
-        ├── routes_sources.py               # CRUD /sources/
-        ├── routes_ingest.py                # POST /ingest/
-        └── routes_ai_providers.py          # CRUD + activate /ai-providers/
+    └─→ raw_ingestion          (every article ever seen; status tracks lifecycle)
+            │
+            └─→ filtered_articles        (AI-confirmed crime articles: extracted + scored)
+                    │
+                    └─→ post_processed_articles  (same data + rewritten content)
+                                │
+                                └─→ final_articles  (public ranked feed: top N by rank_score)
 ```
 
----
-
-## 4. Architectural Philosophy
-
-The codebase follows a strict **layered architecture** — each layer has one responsibility
-and may only call the layer directly below it.
+### Reference / lookup tables
 
 ```
-HTTP Request
-     │
-     ▼
- [API Layer]           ← validates input, calls service/repo, returns schema
-     │
-     ▼
- [Service Layer]       ← business logic, pipeline orchestration, error handling
-     │
-     ▼
- [Repository Layer]    ← database access only — no business logic
-     │
-     ▼
- [Model Layer]         ← table definitions only — no methods, no logic
-     │
-     ▼
-  [PostgreSQL]
+master_category       (8 categories: Violent Crime, Financial Crime, …)
+master_sub_category   (10 sub-categories: murder, theft, fraud, …)
+country               (seeded once)
+state                 (36 Indian states/UTs — used for location FK)
+ai_provider_configs   (DB-managed AI provider credentials + active flag)
 ```
 
-**Enforced rules:**
-- Routes never touch `AsyncSession` directly — they receive injected repos/services via `Depends`
-- Repositories never call services — data flows downward only
-- Pydantic schemas never appear inside ORM models
-- Business logic never appears inside schemas or models
-- External HTTP / AI API calls happen only inside `services/`
+### Key columns
 
----
-
-## 5. Layer-by-Layer Breakdown
-
-### 5.1 Entry Point — `app/main.py`
-
-Creates the FastAPI app, attaches middleware, and registers all routers.
-
-**Responsibilities:**
-- Creates `FastAPI(title="Crime News API", version="1.0.0")` with a `lifespan` hook
-- `lifespan` startup: calls `start_scheduler()` — kicks off the background jobs
-- `lifespan` shutdown: calls `stop_scheduler()` — drains running jobs gracefully
-- Attaches `CORSMiddleware` with `allow_origins=["*"]` (restrict to your domain in production)
-- Configures `logging.basicConfig` at `INFO` level
-- Registers 5 routers with prefixes and Swagger tags
-- `/health` and `/` are hidden from the OpenAPI schema (`include_in_schema=False`)
-
----
-
-### 5.2 Core Layer — `app/core/`
-
-Infrastructure with no domain knowledge.
-
----
-
-#### `config.py`
-
-All environment variables in one typed object, loaded once at startup.
-
-```python
-class Settings(BaseSettings):
-    DATABASE_URL: str               # required — app refuses to start if missing
-    DEBUG: bool = False
-    GEMINI_API_KEY: str | None = None
-    ANTHROPIC_API_KEY: str | None = None
-    AI_REQUESTS_PER_MINUTE: int = 5    # rate limiter for free-tier safety
-    AI_RETRY_ATTEMPTS: int = 3
-    AI_RETRY_DELAY_SECONDS: float = 15.0
-    INGEST_INTERVAL_MINUTES: int = 5
-    PUBLISH_INTERVAL_MINUTES: int = 5
-    PUBLISH_OFFSET_SECONDS: int = 30   # delay publish job after ingest
-    FEED_TOP_N: int = 20
-    DUCKDUCKGO_TIMEOUT_SECONDS: float = 10.0
-    DECAY_FRESH: float = 1.00          # < 6h
-    DECAY_RECENT: float = 0.75         # 6–24h
-    DECAY_DAY: float = 0.50            # 1–3d
-    DECAY_WEEK: float = 0.25           # 3–7d
-    DECAY_OLD: float = 0.10            # > 7d
-```
-
-All other files import the singleton `settings = Settings()`. Nothing else calls `os.getenv`.
-
----
-
-#### `database.py`
-
-Async SQLAlchemy engine and `get_db` session dependency.
-
-```python
-engine = create_async_engine(settings.DATABASE_URL, echo=settings.DEBUG, pool_size=10, max_overflow=20)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
-
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
-        yield session
-```
-
-`expire_on_commit=False` prevents "lazy load after commit" errors when route handlers access ORM attributes after a `commit()`.
-
----
-
-#### `deps.py`
-
-FastAPI `Depends` factories — the only place repositories and services are instantiated for routes.
-
-| Function | Returns | Used by |
-|----------|---------|---------|
-| `get_source_repo` | `SourceRepository` | sources routes |
-| `get_post_processed_repo` | `PostProcessedArticleRepository` | final-articles publish |
-| `get_ai_provider_repo` | `AIProviderRepository` | ai-providers routes |
-| `get_final_article_repo` | `FinalArticleRepository` | final-articles routes |
-| `get_category_repo` | `MasterCategoryRepository` | master-data routes |
-| `get_sub_category_repo` | `MasterSubCategoryRepository` | master-data routes |
-| `get_state_repo` | `StateRepository` | master-data routes |
-| `get_ingestion_service` | `IngestionService` | ingest route |
-
-`get_ingestion_service` wires all five repos (`source`, `raw`, `filter_article`, `post_processed`, `ai_provider`) plus the raw `db` session (needed by `CategoryResolver` / `LocationResolver`).
-
----
-
-#### `enums.py`
-
-Static `IntEnum` definitions for crime taxonomy — **zero DB queries** at classification time.
-
-```python
-class CategoryEnum(IntEnum):
-    VIOLENT_CRIME = 1;  TERRORISM = 2;  FINANCIAL_CRIME = 3;  CYBER_CRIME = 4
-    DRUG_CRIME = 5;     PROPERTY_CRIME = 6;  SEXUAL_CRIME = 7;  OTHER = 8
-
-class SubCategoryEnum(IntEnum):
-    MURDER = 1;  VIOLENCE = 2;  TERRORISM = 3;  FRAUD = 4;  CORRUPTION = 5
-    CYBERCRIME = 6;  DRUG_TRAFFICKING = 7;  THEFT = 8;  HUMAN_TRAFFICKING = 9;  OTHER = 10
-```
-
-Two lookup dicts are also defined here:
-- `AI_STRING_TO_SUB_CATEGORY: dict[str, SubCategoryEnum]` — maps AI output strings (`"murder"`, `"fraud"`, …) to enum IDs
-- `SUB_CATEGORY_TO_CATEGORY: dict[SubCategoryEnum, CategoryEnum]` — maps sub-category → parent category for deriving `category_ids`
-
-IDs match the seed migration (`i5j6k7l8m901`) which uses `ON CONFLICT DO NOTHING`, so they are stable.
-
----
-
-### 5.3 Models Layer — `app/models/`
-
-SQLAlchemy ORM table definitions. **No methods, no business logic, no imports from services or schemas.**
-
-`app/models/__init__.py` imports every model in dependency order so that all `Table` objects are registered onto `Base.metadata` before any query or migration runs.
-
----
-
-#### `base.py`
-```python
-class Base(DeclarativeBase):
-    pass
-```
-All models inherit from this. Alembic's `env.py` imports `Base.metadata` to autogenerate migrations.
-
----
-
-#### `source.py` → `news_sources`
+**`raw_ingestion`**
 
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | |
-| `name` | VARCHAR | Display label |
-| `type` | VARCHAR | `"rss"` or `"rest"` — controls which fetcher is used |
-| `url` | VARCHAR UNIQUE | Dedup guard — prevents registering the same feed twice |
-| `config` | JSONB | Per-source extras, e.g. `{"headers": {"Authorization": "Bearer …"}}` |
-| `is_active` | BOOLEAN | `false` = paused, skipped by scheduler |
-| `created_at` | TIMESTAMPTZ | `server_default=NOW()` |
+|---|---|---|
+| content_hash | VARCHAR(64) UNIQUE | SHA-256 of `source_id + raw_payload` — deduplication key |
+| source_id | FK → news_sources | |
+| raw_payload | JSONB | full original article dict |
+| status | VARCHAR | `pending` → `filtered` / `filtered_out` / `failed` |
+| normalized_by | VARCHAR(200) | e.g. `ai:gemini_multimodal:gemini-2.0-flash` |
+| processed_at | TIMESTAMP | |
 
----
-
-#### `raw_event.py` → `raw_ingestion`
-
-The **pipeline inbox** — every item fetched from a source lands here first.
+**`filtered_articles`**
 
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | |
-| `source_id` | INTEGER FK → news_sources | CASCADE delete |
-| `content_hash` | VARCHAR(64) UNIQUE | SHA-256 of `source_id + raw_payload` — deduplication key |
-| `raw_payload` | JSONB | Complete original data from the feed/API |
-| `status` | VARCHAR | `pending` → `filtered` / `filtered_out` / `failed` |
-| `normalized_by` | VARCHAR(200) | e.g. `"ai:gemini_langgraph:gemini-2.0-flash"` — audit trail |
-| `error_message` | TEXT | Populated on `failed` status |
-| `retry_count` | INTEGER | How many AI retry attempts were made |
-| `created_at` | TIMESTAMPTZ | |
-| `processed_at` | TIMESTAMPTZ | When AI processing completed |
+|---|---|---|
+| raw_ingestion_id | FK → raw_ingestion | |
+| title | TEXT | original headline from AI extraction |
+| rewritten_title | TEXT | AI-rephrased headline |
+| url | TEXT | canonical article URL |
+| sub_category_id | FK → master_sub_category | primary crime type |
+| sub_category_ids | JSONB | `[1, 4]` — multi-label int array |
+| category_ids | JSONB | parent category IDs derived from sub_category_ids |
+| location_state_id | FK → state | resolved from AI location string |
+| location | TEXT | raw AI location string |
+| region | VARCHAR | e.g. `south asia` |
+| imp_score | INTEGER | 1–100 |
 
----
+**`post_processed_articles`**
 
-#### `ai_provider.py` → `ai_provider_configs`
-
-Stores AI provider credentials — allows runtime provider switching without redeployment.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | |
-| `name` | VARCHAR | Friendly label |
-| `provider` | VARCHAR | `anthropic`, `openai`, `gemini`, `gemini_langgraph`, `gemini_multimodal`, `custom` |
-| `model` | VARCHAR | e.g. `gemini-2.0-flash`, `claude-haiku-4-5-20251001` |
-| `api_key` | VARCHAR | Stored encrypted at rest; never returned by any API endpoint |
-| `base_url` | VARCHAR | Required for `gemini` and `custom`; null for `anthropic`/`openai` |
-| `is_active` | BOOLEAN | Only one row may be `true` at a time (partial unique index) |
-| `created_at` | TIMESTAMPTZ | |
-
----
-
-#### `category.py` → `master_category` + `master_sub_category`
-
-Reference tables seeded by migration `i5j6k7l8m901`. Rarely change after seeding.
-
-`master_category`: id, name, description, priority_point, is_active, created_at
-`master_sub_category`: id, category_id (FK), name, description, priority_point, is_active, created_at
-
-IDs are stable (matching `enums.py`) because the seed uses `ON CONFLICT DO NOTHING`.
-
----
-
-#### `location.py` → `country` + `state`
-
-`country`: id, name
-`state`: id, country_id (FK), name
-
-Seeded with India + 36 states/UTs. `LocationResolver` loads the state table at the start of each ingest run to resolve AI-extracted location strings to a `state.id`.
-
----
-
-#### `filter_article.py` → `filtered_articles`
-
-**Stage 1 AI output.** One row per crime-relevant article.
+Same structure as filtered_articles, plus:
 
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | |
-| `raw_ingestion_id` | INTEGER FK UNIQUE | One-to-one with raw_ingestion |
-| `title` | VARCHAR | Extracted verbatim from source |
-| `description` | TEXT | Body text extracted and HTML-cleaned |
-| `image_url` | VARCHAR | |
-| `main_url` | VARCHAR UNIQUE | Canonical URL — upsert dedup key |
-| `published_at` | TIMESTAMPTZ | |
-| `created_at` | TIMESTAMPTZ | |
-| `sub_category_ids` | JSONB | Multi-label array e.g. `[1, 3]` (Murder + Terrorism). GIN indexed. |
-| `category_ids` | JSONB | Parent category IDs derived from sub_category_ids. GIN indexed. |
-| `location_state_id` | INTEGER FK → state | Nullable |
+|---|---|---|
+| filter_article_id | FK → filtered_articles | |
+| description | TEXT | original source description |
+| rewritten_description | TEXT | AI-rewritten description |
+| image_url | TEXT | |
+| reference_urls | JSONB | reserved for future web-search reference links |
 
----
-
-#### `post_processed_article.py` → `post_processed_articles`
-
-**Stage 2 AI output.** Rewritten, scored, reference-enriched version.
+**`final_articles`**
 
 | Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | |
-| `filter_article_id` | INTEGER FK UNIQUE | One-to-one with filtered_articles |
-| `title` | VARCHAR | AI-rewritten headline |
-| `description` | TEXT | AI-rewritten ~100 word summary |
-| `image_url` | VARCHAR | |
-| `reference_urls` | TEXT[] | Up to 5 related article URLs found via DuckDuckGo |
-| `published_at` | TIMESTAMPTZ | |
-| `created_at` | TIMESTAMPTZ | |
-| `sub_category_id` | INTEGER FK → master_sub_category | Single best-match sub-category |
-| `location_id` | INTEGER FK → state | |
-| `imp_score` | INTEGER | AI importance score 1–100. Partial B-tree index (NOT NULL rows only). |
+|---|---|---|
+| post_processed_article_id | FK (UNIQUE) | upsert key |
+| title | TEXT | copied from post_processed_articles |
+| description | TEXT | rewritten_description |
+| image_url | TEXT | |
+| reference_urls | JSONB | |
+| rank_score | FLOAT | `imp_score × time_decay_factor` |
 
 ---
 
-#### `final_article.py` → `final_articles`
+## 5. Pipeline — Bird's Eye View
 
-**The public feed.** Top N articles ranked by `rank_score`, refreshed every 5 minutes.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | INTEGER PK | |
-| `post_processed_article_id` | INTEGER FK UNIQUE | |
-| `title` | VARCHAR | Denormalised from post_processed_articles at publish time |
-| `description` | TEXT | |
-| `image_url` | VARCHAR | |
-| `reference_urls` | TEXT[] | |
-| `rank_score` | FLOAT | `imp_score × time_decay_factor`. B-tree indexed. |
-| `created_at` | TIMESTAMPTZ | |
-
----
-
-### 5.4 Repository Layer — `app/repositories/`
-
-The only code that executes SQL. Repositories accept an `AsyncSession` via constructor injection. They return ORM objects or primitives. Zero business logic.
-
----
-
-#### `source_repo.py` — `SourceRepository`
-| Method | SQL | Notes |
-|--------|-----|-------|
-| `create(data)` | INSERT + RETURNING | Returns populated Source ORM object |
-| `get_all(active_only)` | SELECT WHERE is_active | Defaults to active only |
-| `get_by_id(id)` | SELECT WHERE id | Returns `None` on miss |
-| `update(id, data)` | UPDATE SET … WHERE id | Partial update (only non-None fields) |
-| `delete(id)` | DELETE WHERE id | Returns `True` if deleted |
-
----
-
-#### `raw_ingestion_repo.py` — `RawIngestionRepository`
-| Method | SQL | Notes |
-|--------|-----|-------|
-| `store_batch(source_id, items)` | INSERT ON CONFLICT DO NOTHING | Returns `{content_hash: id}` for all hashes — idempotent |
-| `mark_filtered(source_id, hashes_by_normalizer)` | UPDATE SET status='filtered' | Sets `normalized_by` to the model audit string |
-| `mark_filtered_out(source_id, hashes, model_id)` | UPDATE SET status='filtered_out' | |
-| `mark_failed(source_id, hashes, reason)` | UPDATE SET status='failed' | |
-
-`content_hash` = SHA-256(`str(source_id) + json.dumps(payload, sort_keys=True)`). Prevents re-processing the same article on every scheduler run.
-
----
-
-#### `filter_article_repo.py` — `FilterArticleRepository`
-| Method | Notes |
-|--------|-------|
-| `insert_batch(articles, hash_to_raw_id)` | Upsert on `main_url`. Returns `{url: filter_article_id}`. |
-| `get_all(limit, offset, sub_category_id, q)` | JSONB `@>` containment for sub_category_id filter |
-| `get_by_id(id)` | |
-| `count(sub_category_id, q)` | |
-
----
-
-#### `post_processed_article_repo.py` — `PostProcessedArticleRepository`
-| Method | Notes |
-|--------|-------|
-| `insert_batch(articles, url_to_filter_id)` | Upsert on `filter_article_id`. Falls back to Stage 1 values if Stage 2 fields are missing. |
-| `get_all(limit, offset, sub_category_id, q, from_date, to_date)` | Ordered by published_at DESC |
-| `get_by_id(id)` | |
-| `count(…)` | |
-
----
-
-#### `final_article_repo.py` — `FinalArticleRepository`
-| Method | Notes |
-|--------|-------|
-| `upsert_batch(articles)` | Upsert on `post_processed_article_id`. Updates rank_score on re-publish. |
-| `get_feed(limit, offset, sub_category_id, q)` | Ordered by `rank_score DESC` |
-| `get_by_id(id)` | |
-| `count(sub_category_id, q)` | |
-
----
-
-#### `master_data_repo.py` — Read-only repos for reference tables
-
-`MasterCategoryRepository`, `MasterSubCategoryRepository`, `CountryRepository`, `StateRepository` — all read-only (`get_all`, `get_by_id`, `count`).
-
----
-
-#### `article_repo.py`
-```python
-ArticleRepository = PostProcessedArticleRepository
 ```
-Backwards-compatible alias. Existing code that imports `ArticleRepository` continues to work.
-
----
-
-### 5.5 Schema Layer — `app/schemas/`
-
-Pydantic models defining the HTTP contract. ORM objects never leak out of route handlers — they are always serialised through a schema first.
-
-`model_config = {"from_attributes": True}` on all response schemas enables reading from SQLAlchemy ORM objects by attribute access.
-
-| Schema file | Key models |
-|-------------|-----------|
-| `source_schema.py` | `SourceCreate`, `SourceUpdate`, `SourceResponse` |
-| `ai_provider_schema.py` | `AIProviderCreate` (with examples for all 5 provider types), `AIProviderResponse`, `AIProviderActivateResponse` |
-| `article_schema.py` | `PostProcessedArticleResponse`, `ArticleListResponse`, `ArticleResponse` (alias) |
-| `final_article_schema.py` | `FinalArticleResponse`, `FinalArticleListResponse` |
-| `master_data_schema.py` | `MasterCategoryResponse`, `MasterSubCategoryResponse`, `StateResponse` |
-
----
-
-### 5.6 Service Layer — `app/services/`
-
-All business logic and orchestration lives here.
-
----
-
-#### `fetchers/rss_fetcher.py` — `RSSFetcher`
-
-Fetches and parses RSS/Atom feeds.
-
-```python
-async def fetch(self, url: str) -> feedparser.FeedParserDict:
-    feed = await asyncio.to_thread(feedparser.parse, url)
-    ...
+┌─────────────────────────────────────────────────────────────────────┐
+│                        SCHEDULER (every 5 min)                      │
+│                                                                     │
+│  run_ingestion_for_all_active_sources()                             │
+│    ├── for each active source → _ingest_one_source(source)          │
+│    │     └── IngestionService.ingest(source)         ◄── MAIN LOGIC │
+│    └── on any OK → run_publishing()                                 │
+│          └── PublishingService.publish(top_n=20)     ◄── RANKING    │
+└─────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    IngestionService.ingest()                        │
+│                                                                     │
+│  1. FETCH         RSSFetcher / RestFetcher → list[dict]             │
+│  2. CAP           slice to AI_MAX_ITEMS_PER_RUN (default 10)        │
+│  3. HASH          compute SHA-256 per article                       │
+│  4. DEDUP         raw_repo.store_batch()                            │
+│                   → returns only NEW (unseen) hashes                │
+│  5. KEYWORD FILTER _has_crime_keywords()                            │
+│                   → skip ~70% of general-news articles              │
+│  6. AI PIPELINE   asyncio.gather() with semaphore + rate limiter    │
+│                   per article → ai_provider.process()               │
+│  7. SORT RESULTS  crime / filtered_out / failed                     │
+│  8. RESOLVE FKs   CategoryResolver + LocationResolver               │
+│  9. SAVE          filter_article_repo.insert_batch()                │
+│                   post_processed_repo.insert_batch()                │
+│ 10. UPDATE STATUS raw_repo.mark_filtered / mark_filtered_out / mark_failed
+└─────────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                   PublishingService.publish()                       │
+│                                                                     │
+│  1. SELECT   post_processed_repo.get_top_by_imp_score(limit=20)     │
+│  2. RANK     rank_score = imp_score × time_decay_factor             │
+│              decay: 1.0 (<6 h) / 0.75 (<24 h) / 0.50 (<3 d)        │
+│                     0.25 (<7 d) / 0.10 (older)                      │
+│  3. UPSERT   final_article_repo.upsert_batch()                      │
+│              (ON CONFLICT post_processed_article_id → UPDATE)       │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-`asyncio.to_thread` is required because `feedparser.parse` is synchronous and blocking. Calling it directly in `async def` would freeze the entire event loop. The thread pool offloads it so other requests continue being served.
+### Article lifecycle statuses (raw_ingestion.status)
 
-If `feed.bozo` is `True` (malformed XML), it logs a warning and continues — partial feeds are better than no feed.
-
----
-
-#### `fetchers/rest_fetcher.py` — `RestFetcher`
-
-Fetches articles from a JSON REST API endpoint.
-
-```python
-_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
-
-async def fetch(self, url: str, headers: dict | None = None) -> list[dict]:
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        response = await client.get(url, headers=headers or {})
-        response.raise_for_status()
-    ...
 ```
-
-Handles four common envelope shapes (`[]`, `{"articles":[]}`, `{"items":[]}`, `{"results":[]}`) and always returns a flat `list[dict]`.
-
----
-
-#### `source_normalizer.py`
-
-Pure transformation — converts raw feedparser entries or REST API dicts into plain Python types suitable for JSONB storage.
-
-- `_to_plain_dict(obj)`: Recursively converts `FeedParserDict` (a dict subclass with attribute access) to plain dicts. Without this, SQLAlchemy's JSONB serialiser raises `TypeError`.
-- `_parse_date(raw)`: Tries RFC 2822 (RSS) then ISO 8601 (REST). Returns a UTC `datetime` or `None`.
-- `normalize(item)`: Maps feed-specific field names to the canonical dict expected by `RawIngestionRepository.store_batch()`.
-
----
-
-#### `normalization/providers/base.py`
-
-The most important file in the AI pipeline. Contains:
-
-**`COMBINED_PROCESS_PROMPT` (Stage 1)**
-Instructions for the AI to extract structured fields and multi-label crime classify. Key rules:
-- Extract `title` and `description` verbatim — no rephrasing
-- Classify `sub_category_ids` as a multi-label integer array (e.g. `[1, 3]`)
-- Extract `location` as a city/state name string
-
-**`POST_PROCESS_PROMPT` (Stage 2)**
-Instructions for rewriting and scoring. Key rules:
-- Rephrase `title` and `description` in original words (anti-plagiarism)
-- Description must be ~100 words
-- Extract `reference_urls` only from the provided `web_search_context` — never invented
-- Assign `imp_score` 1–100 based on severity, impact, and recency
-
-**Pydantic output models:**
-- `CombinedOutput` — validates Stage 1 JSON with lenient field validators (bad fields default to `None`, not hard failure)
-- `PostProcessOutput` — validates Stage 2 JSON; URL validator rejects non-HTTP URLs
-
-**Helper functions:**
-- `build_process_message(raw_payload, source_type)` — builds the user message for Stage 1
-- `build_post_process_message(filter_article, search_context)` — builds the user message for Stage 2
-- `parse_combined_output(text, raw_payload)` — strips code fences, JSON-parses, Pydantic-validates
-- `parse_post_process_output(text)` — same for Stage 2
-
-**`AIProvider` ABC:**
-```python
-class AIProvider(ABC):
-    @property
-    @abstractmethod
-    def model_id(self) -> str: ...          # e.g. "ai:gemini_langgraph:gemini-2.0-flash"
-
-    @abstractmethod
-    async def process(self, raw_payload: dict, source_type: str) -> dict | None: ...
-
-    async def post_process(self, filter_article: dict, search_context: str = "") -> dict | None:
-        return None   # default — providers override this
+pending → (keyword filter fails) → filtered_out
+        → (AI says not crime)   → filtered_out
+        → (AI call error)       → failed
+        → (AI says crime, saved)→ filtered
 ```
 
 ---
 
-#### `normalization/providers/openai_prov.py` — `OpenAICompatibleProvider`
+## 6. Service Layer — Deep Dive
 
-Used for: OpenAI GPT models, Gemini via its OpenAI-compatible REST endpoint, any custom server (Ollama, vLLM).
+### 6.1 `ingestion_service.py` — IngestionService
 
-- Uses the `openai.AsyncOpenAI` client with a custom `base_url` for non-OpenAI backends
-- Stage 1: sends `COMBINED_PROCESS_PROMPT` as system message with `response_format={"type": "json_object"}`
-- Stage 2: sends `POST_PROCESS_PROMPT` as system message
-- `max_tokens=1500` for both stages
+**Responsibility:** Orchestrates the entire article lifecycle from fetch to DB write.
 
----
-
-#### `normalization/providers/anthropic_prov.py` — `AnthropicProvider`
-
-Used for: Anthropic Claude models.
-
-- Uses `anthropic.AsyncAnthropic` client with Anthropic's native `system=` parameter (better instruction adherence than injecting as a user message)
-- `max_tokens=1500` for Stage 1, `600` for Stage 2
-
----
-
-#### `normalization/providers/gemini_langgraph_prov.py` — `GeminiLangGraphProvider`
-
-Used for: Gemini models via LangGraph agent graph.
-
-- Builds a two-node LangGraph: `search_node` (DuckDuckGo context) → `process_node` (Gemini call)
-- Passes search context to the AI prompt for better classification
-
----
-
-#### `normalization/providers/gemini_multimodal_prov.py` — `GeminiMultimodalLangGraphProvider` *(recommended)*
-
-Used for: Gemini with multimodal image support via LangGraph.
-
-**Stage 1 graph** (3 nodes):
-1. `extract_node` — lightweight dict traversal for candidate title/image/URL
-2. `search_node` — DuckDuckGo news search for crime context
-3. `classify_node` — Gemini `with_structured_output(FilterClassification)` — passes `image_url` if available for multimodal analysis
-
-**Stage 2 graph** (separate):
-Similar structure with rewrite + scoring nodes.
-
----
-
-#### `normalization/provider_factory.py`
-
-Instantiates and **caches** AI provider objects. Caching is critical — providers hold HTTP connection pools internally, and recreating them per article would add connection overhead.
+**Constructor dependencies:**
 
 ```python
-_cache: dict[tuple, AIProvider] = {}
-
-def create_from_config(config: AIProviderConfig) -> AIProvider:
-    key = (config.id, config.model, config.api_key)
-    if key not in _cache:
-        _cache[key] = _build(config)
-    return _cache[key]
-```
-
-`_build()` dispatches on `config.provider` to the correct provider class.
-
----
-
-#### `normalization/ai_processor.py`
-
-Resolves which AI provider to use. Resolution order:
-
-1. **DB active config** → `provider_factory.create_from_config(active_config)`
-2. **`GEMINI_API_KEY` env** → `GeminiMultimodalLangGraphProvider` (recommended default)
-3. **`ANTHROPIC_API_KEY` env** → `AnthropicProvider`
-4. **`None`** → articles are dropped at AI stage
-
----
-
-#### `normalization/resolvers.py`
-
-**`CategoryResolver`** — stateless, enum-based, zero DB queries:
-```python
-def resolve(self, ai_str: str | None) -> int | None:
-    return int(AI_STRING_TO_SUB_CATEGORY[ai_str.lower().strip()])
-
-def resolve_all(self, ai_str_list: list[str]) -> list[int]:
-    # Returns deduplicated list of SubCategoryEnum int values
-
-def resolve_categories_from_ids(self, sub_cat_ids: list[int]) -> list[int]:
-    # Maps SubCategoryEnum → CategoryEnum via SUB_CATEGORY_TO_CATEGORY dict
-```
-
-**`LocationResolver`** — DB-backed, loaded once per ingest run:
-```python
-def resolve(self, location: str | None) -> int | None:
-    # Two-pass: direct state name match, then city → state alias lookup
-    # _CITY_TO_STATE: dict of ~80 Indian cities to their state names
-```
-
-`load_resolvers(db)` is called once at the top of `IngestionService.ingest()`:
-- Only queries the `state` table (36 rows)
-- Returns `(CategoryResolver(), LocationResolver(state_map))`
-
----
-
-#### `ingestion_service.py` — `IngestionService`
-
-**The pipeline orchestrator.** Wires together all fetchers, AI providers, resolvers, and repositories to run the full two-stage processing pipeline.
-
-**Constructor params:**
-```python
-def __init__(self, source_repo, raw_repo, filter_article_repo,
-             post_processed_repo, ai_provider_repo, db=None)
+IngestionService(
+    source_repo,          # read news_sources
+    raw_repo,             # store raw payloads, update statuses
+    filter_article_repo,  # write stage-1 results
+    post_processed_repo,  # write stage-2 results
+    ai_provider_repo,     # read active AI config from DB
+    db,                   # AsyncSession — passed to resolvers
+)
 ```
 
 **`ingest(source)` — full pipeline in order:**
 
-```
-1. FETCH
-   RSSFetcher.fetch(url)  or  RestFetcher.fetch(url, headers)
-   → list of raw items
+| Step | Code | What it does |
+|---|---|---|
+| 1 | `_fetch_items(source)` | Calls RSSFetcher or RestFetcher based on `source.type` |
+| 2 | slice `raw_items` | Caps at `AI_MAX_ITEMS_PER_RUN` (default 10) |
+| 3 | `compute_content_hash()` | SHA-256 of `source_id + json(raw_payload)` per article |
+| 4 | `raw_repo.store_batch()` | INSERT OR IGNORE; returns `{hash→id}` + set of new hashes |
+| 5 | `_load_ai_provider()` | DB config → env fallback → None |
+| 6 | `_has_crime_keywords(raw)` | Keyword pre-filter (frozenset ~50 terms) |
+| 7 | `asyncio.gather(process_with_semaphore)` | Concurrent AI calls, rate-limited |
+| 8 | sort into `crime_articles / filtered_out_hashes / failed_hashes` | |
+| 9 | `load_resolvers(db)` | One DB query (state table); categories use enum |
+| 10 | `cat_resolver.resolve_all()` + `loc_resolver.resolve()` | AI strings → FK ints |
+| 11 | `filter_article_repo.insert_batch()` | Writes `filter_articles` |
+| 12 | `post_processed_repo.insert_batch()` | Writes `post_processed_articles` |
+| 13 | `_update_raw_statuses()` | Updates `raw_ingestion.status` |
 
-2. STORE RAW
-   raw_ingestion_repo.store_batch(source_id, items)
-   → {content_hash: raw_ingestion_id}
-   Skips items whose content_hash already exists (idempotent).
-
-3. LOAD AI PROVIDER
-   ai_processor.get_active_provider(ai_provider_repo)
-   → AIProvider instance (cached by provider_factory)
-
-4. STAGE 1 — AI FILTER (concurrent, rate-limited)
-   For each raw item:
-     acquire rate limiter token  (AI_REQUESTS_PER_MINUTE)
-     acquire semaphore           (concurrency cap)
-     ai_provider.process(raw_payload, source_type)
-     → article dict or None
-   asyncio.gather(*tasks)  ← all items processed concurrently
-
-5. SPLIT RESULTS
-   crime articles        → proceed to Stage 2
-   non-crime / None      → mark raw_ingestion status = 'filtered_out'
-   exceptions            → retry up to AI_RETRY_ATTEMPTS times with backoff
-
-6. RESOLVE FOREIGN KEYS (once per batch)
-   load_resolvers(db)
-   For each crime article:
-     sub_category_ids  = cat_resolver.resolve_all(article["sub_category_ids"])
-     category_ids      = cat_resolver.resolve_categories_from_ids(sub_category_ids)
-     sub_category_id   = cat_resolver.resolve(article["sub_category"])   (single best)
-     location_state_id = loc_resolver.resolve(article["location"])
-
-7. STAGE 2 — POST-PROCESS (concurrent, rate-limited)
-   For each crime article:
-     DuckDuckGo search for article title  ← outside rate limiter (not an AI call)
-     acquire rate limiter token
-     acquire semaphore
-     ai_provider.post_process(article, search_context)
-     → {rewritten_title, rewritten_description, reference_urls, imp_score}
-
-8. WRITE STAGE 1
-   filter_article_repo.insert_batch(crime_articles, hash_to_raw_id)
-   → {main_url: filter_article_id}
-
-9. WRITE STAGE 2
-   post_processed_repo.insert_batch(crime_articles, url_to_filter_id)
-
-10. AUDIT
-    raw_ingestion_repo.mark_filtered(crime hashes, model_id)
-    raw_ingestion_repo.mark_filtered_out(non-crime hashes)
-    raw_ingestion_repo.mark_failed(failed hashes)
-```
-
-**Rate limiting:**
-
-A process-level singleton `_RateLimiter` and `asyncio.Semaphore` are shared across all concurrent sources and both pipeline stages:
+**Concurrency model:**
 
 ```python
-# Rate limiter: enforces AI_REQUESTS_PER_MINUTE
-# Semaphore concurrency:
-#   RPM ≤ 10  → 1 concurrent AI call
-#   RPM ≤ 30  → 2 concurrent AI calls
-#   RPM ≤ 100 → 5 concurrent AI calls
-#   RPM > 100 → 10 concurrent AI calls
+_global_rate_limiter = _RateLimiter(rpm=AI_REQUESTS_PER_MINUTE)
+_global_semaphore    = asyncio.Semaphore(concurrency_from_rpm(rpm))
+
+# rpm=5  → concurrency=1, interval=12s between calls
+# rpm=10 → concurrency=1
+# rpm=30 → concurrency=2
+# rpm=60 → concurrency=5
 ```
 
-**Retry logic:** On HTTP 429 / quota exhausted responses, retries up to `AI_RETRY_ATTEMPTS` times with exponential backoff (`delay × 2^attempt`).
+Both are **process-level singletons** — all source ingest tasks share the same limiter, preventing total AI request rate from exceeding the configured RPM even when multiple sources run in parallel.
 
-**DuckDuckGo timeout:** Wrapped in `asyncio.wait_for(timeout=settings.DUCKDUCKGO_TIMEOUT_SECONDS)`. If search hangs, it is cancelled and the article proceeds without reference URLs (non-fatal).
+**Retry logic:**
 
----
-
-#### `publishing_service.py` — `PublishingService`
-
-Selects top N post-processed articles and writes the ranked public feed.
-
-**`publish(top_n=20)`:**
-1. `post_processed_repo.get_all(...)` ordered by `imp_score DESC WHERE imp_score IS NOT NULL` — uses partial index
-2. For each article: `rank_score = imp_score × _time_decay_factor(published_at)`
-3. `final_article_repo.upsert_batch(ranked_articles)`
-
-**Time decay factors** (from `settings`):
-
-| Age | Factor | Result for imp_score=80 |
-|-----|--------|------------------------|
-| < 6 hours | 1.00 | 80.0 |
-| 6–24 hours | 0.75 | 60.0 |
-| 1–3 days | 0.50 | 40.0 |
-| 3–7 days | 0.25 | 20.0 |
-| > 7 days | 0.10 | 8.0 |
+`_call_with_retry()` wraps every AI call. On rate-limit errors (429 / "quota" / "resource_exhausted") it uses exponential back-off: `delay × 2^attempt`. Non-rate-limit errors fail immediately (no retry). Configured via `AI_RETRY_ATTEMPTS` (default 3) and `AI_RETRY_DELAY_SECONDS` (default 15 s).
 
 ---
 
-#### `scheduler.py`
+### 6.2 `publishing_service.py` — PublishingService
 
-Two APScheduler jobs registered on `AsyncIOScheduler`:
+**Responsibility:** Selects the top N articles and computes their final ranked scores.
 
-| Job | Trigger | What it does |
-|-----|---------|-------------|
-| `ingestion_all_sources` | Every `INGEST_INTERVAL_MINUTES` | Loads active sources, runs `IngestionService.ingest()` for each concurrently via `asyncio.gather()` |
-| `publish_final_feed` | Every `PUBLISH_INTERVAL_MINUTES` + `PUBLISH_OFFSET_SECONDS` | Runs `PublishingService.publish(top_n=FEED_TOP_N)` |
+**`publish(top_n=20)` steps:**
 
-Each source gets its own `AsyncSession` to isolate DB transactions. `max_instances=1` prevents job pile-up if a previous run is still in progress.
+1. `post_processed_repo.get_top_by_imp_score(limit=top_n)` — fetches top articles ordered by `imp_score DESC`
+2. For each: `rank_score = imp_score × _time_decay_factor(published_at)`
+3. `final_article_repo.upsert_batch(rows)` — `ON CONFLICT (post_processed_article_id) DO UPDATE SET rank_score = ...`
 
----
+**Time decay factors (configurable):**
 
-### 5.7 API Layer — `app/api/`
+| Age | Factor setting | Default |
+|---|---|---|
+| < 6 hours | `DECAY_FRESH` | 1.00 |
+| 6–24 hours | `DECAY_RECENT` | 0.75 |
+| 1–3 days | `DECAY_DAY` | 0.50 |
+| 3–7 days | `DECAY_WEEK` | 0.25 |
+| > 7 days | `DECAY_OLD` | 0.10 |
 
-Thin controllers — validate input, call a service or repository, return a typed schema. No SQL, no business logic.
-
----
-
-#### `routes_final_articles.py` — prefix `/final-articles`
-
-| Method | Path | Handler | Description |
-|--------|------|---------|-------------|
-| GET | `/` | `list_final_articles` | Ranked news feed, ordered by rank_score DESC |
-| GET | `/{article_id}` | `get_final_article` | Single article by ID |
-| POST | `/publish` | `trigger_publishing` | Force a publishing run immediately |
+**Example:** `imp_score=80`, article is 10 hours old → `rank_score = 80 × 0.75 = 60.0`
 
 ---
 
-#### `routes_sources.py` — prefix `/sources`
+### 6.3 `scheduler.py` — APScheduler jobs
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/` | Register a new source (201) |
-| GET | `/` | List sources (active only by default) |
-| GET | `/{id}` | Get one source |
-| PATCH | `/{id}` | Update name/url/config/is_active |
-| DELETE | `/{id}` | Permanently delete (204) |
+Two jobs registered at startup:
 
----
+```python
+# Job 1 — ingestion
+run_ingestion_for_all_active_sources()
+  trigger: interval, every INGEST_INTERVAL_MINUTES (default 5)
+  max_instances: 1  # prevents overlapping runs
 
-#### `routes_ingest.py` — prefix `/ingest`
+# Job 2 — publishing
+run_publishing()
+  trigger: interval, every PUBLISH_INTERVAL_MINUTES (default 5)
+  + PUBLISH_OFFSET_SECONDS (default 30s)
+  max_instances: 1
+```
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/` | Run full pipeline for `source_id` immediately |
-
-Validates source exists (404) and source type is supported (400) before calling `IngestionService.ingest()`.
-
----
-
-#### `routes_ai_providers.py` — prefix `/ai-providers`
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/` | Register config (starts inactive) |
-| GET | `/` | List all configs (api_key excluded) |
-| GET | `/active` | Get currently active config |
-| GET | `/{id}` | Get one config |
-| PATCH | `/{id}/activate` | Make active, deactivate all others |
-| DELETE | `/active` | Deactivate all (fall back to env) |
-| DELETE | `/{id}` | Delete permanently |
+Additionally: after every successful ingestion run, `run_ingestion_for_all_active_sources()` calls `run_publishing()` directly — so a good ingestion run immediately refreshes the feed without waiting for the next scheduled publishing interval.
 
 ---
 
-#### `routes_master_data.py` — prefix `/master`
+### 6.4 `fetchers/rss_fetcher.py` — RSSFetcher
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/categories/` | All crime categories |
-| GET | `/categories/{id}` | One category |
-| GET | `/sub-categories/` | All crime sub-categories (filter by category_id) |
-| GET | `/sub-categories/{id}` | One sub-category |
-| GET | `/states/` | All states (filter by country_id) |
-| GET | `/states/{id}` | One state |
+**What it does:** Wraps `feedparser.parse()` in an async executor call, returning `feed.entries` as-is (feedparser objects).
+
+**Input:** RSS URL
+**Output:** `feedparser.FeedParserDict` — caller (IngestionService) passes entries to `to_plain_dict()`
 
 ---
 
-### 5.8 Migrations
+### 6.5 `fetchers/rest_fetcher.py` — RestFetcher
 
-All migrations live in `migrations/versions/`. Applied with `alembic upgrade head`.
+**What it does:** `httpx.AsyncClient.get(url, headers)` → JSON → `list[dict]`
 
-| Migration | Description |
-|-----------|-------------|
-| `29df1b34` | Initial schema: `news_sources`, `articles` |
-| `c8f2a1e3` | Add `raw_ingestion` table |
-| `d9e4f5a6` | Add `ai_provider_configs` table |
-| `e1f2a3b4` | Add enrichment fields to articles |
-| `f2g3h4i5` | Add article card fields |
-| `g3h4i5j6` | Widen `normalized_by` VARCHAR(50→200) |
-| `h4i5j6k7` | **Pipeline redesign** — adds `filtered_articles`, `post_processed_articles`, `master_category`, `master_sub_category`, `country`, `state` |
-| `i5j6k7l8` | Seed master data (8 categories, 10 sub-categories, India + 36 states) |
-| `j6k7l8m9` | Pipeline enhancements — add `sub_category_ids` JSONB, `location_state_id`, `imp_score`, `final_articles` |
-| `k7l8m9n0` | Cleanup — rename `filter_articles` → `filtered_articles`, drop orphaned `category_id` FK, add `category_ids` JSONB |
-| `l8m9n0o1` | **Performance indexes** — GIN on `sub_category_ids`/`category_ids`, B-tree on `raw_ingestion.status`, partial B-tree on `imp_score` |
-
-`migrations/env.py` uses `async_engine_from_config` with `asyncio.run()` to bridge the sync Alembic runner into async context (required for asyncpg). `pool.NullPool` is used so the process exits cleanly after migration.
+Handles both a list-at-root response and a dict-with-articles-key response. Used for GNews-style REST APIs.
 
 ---
 
-## 6. Full Data Flow
+### 6.6 `source_normalizer.py`
 
-### Scheduled ingestion (every 5 minutes)
+**`to_plain_dict(entry)`:** Converts feedparser or REST API objects to a plain `dict[str, Any]` without feedparser-specific types. Handles HTML entities, `time.struct_time`, nested dicts.
+
+**`parse_date(s)`:** Parses ISO 8601, RFC 2822, and common formats into a UTC-aware `datetime`. Returns `None` on failure.
+
+---
+
+### 6.7 `normalization/resolvers.py`
+
+**`CategoryResolver`** (no DB query — uses enums from `app.core.enums`):
 
 ```
-scheduler.py: run_ingestion_for_all_active_sources()
+resolve("murder")                       → 1   (SubCategoryEnum.MURDER)
+resolve_all(["murder", "terrorism"])    → [1, 3]
+resolve_categories_from_ids([1, 3])     → [1]  (both belong to Violent Crime)
+```
+
+**`LocationResolver`** (one DB query at startup — loads state table):
+
+```
+resolve("Mumbai, Maharashtra, India")   → 14  (Maharashtra state id)
+resolve("Bengaluru")                    → 9   (Karnataka via city alias map)
+resolve("Germany")                      → None (not an Indian state)
+```
+
+Strategy: (1) substring match on state name → (2) city alias map (`_CITY_TO_STATE` — 80+ Indian cities) → (3) None.
+
+**`load_resolvers(db)`:** Creates both resolvers. Called once per ingest run after the AI stage.
+
+---
+
+### 6.8 `normalization/provider_factory.py`
+
+**Responsibility:** Creates and caches `AIProvider` instances for the lifetime of the process.
+
+```
+cache key = (config.id, config.model, config.api_key)
+```
+
+IngestionService is created fresh per HTTP request, but the AI SDK client (with connection pools) is created **once** and reused. Supports: `anthropic`, `gemini_langgraph`, `gemini_multimodal`, `openai`, `gemini`, `custom`.
+
+To add a new provider: add a subclass in `providers/`, import it here, add an `elif` branch in `_build()`.
+
+---
+
+### 6.9 `normalization/ai_processor.py`
+
+**`get_env_fallback_provider()`** — called when no DB config is active.
+
+Resolution order:
+1. `GEMINI_API_KEY` → `GeminiMultimodalLangGraphProvider` (gemini-2.0-flash) — **recommended**
+2. `GEMINI_API_KEY` (fallback) → `GeminiLangGraphProvider`
+3. `ANTHROPIC_API_KEY` → `AnthropicProvider` (claude-haiku-4-5-20251001)
+4. Neither → `None` → ingestion skips AI
+
+---
+
+## 7. How the AI Works
+
+### 7.1 The Single Prompt Design
+
+All four providers use a **single AI call per article** (no separate extract + rewrite stages). The system prompt (`SINGLE_PROCESS_PROMPT` in `base.py`) instructs the model to:
+
+- **Return `{"is_crime": false}` immediately** if the article is not crime-related. This costs near-zero tokens for ~30% of articles that pass the keyword filter.
+- **Return the full JSON** for crime articles — including original text, rewritten content, classification, location, and importance score — in one pass.
+
+This is intentionally simpler than a two-stage pipeline because:
+- Gemini Flash is fast enough to do all of this in one call
+- Fewer API calls = lower quota usage
+- No partial-result storage complexity
+
+---
+
+### 7.2 Provider: `OpenAICompatibleProvider` (`openai_prov.py`)
+
+**Best for:** Gemini via the Google OpenAI-compatible endpoint, standard OpenAI, Ollama/vLLM.
+
+```python
+response = await client.chat.completions.create(
+    model=self._model,
+    max_tokens=4096,
+    temperature=0,
+    response_format={"type": "json_object"},  # forces JSON output
+    messages=[
+        {"role": "system", "content": SINGLE_PROCESS_PROMPT},
+        {"role": "user",   "content": build_process_message(raw_payload, source_type)},
+    ],
+)
+text = response.choices[0].message.content
+return parse_single_output(text, raw_payload)
+```
+
+**JSON parsing:** `parse_single_output()` calls `_extract_json()` which:
+1. Strips markdown code fences (` ```json ... ``` `)
+2. Removes `<thinking>...</thinking>` blocks (emitted by some Gemini models)
+3. Slices `text[first '{' : last '}']` to isolate the JSON even with prose preamble
+4. `json.loads()` → Pydantic `SingleOutput` validation
+
+**URL fallback:** If AI returns `url: null`, the raw payload's `link` or `url` field is used instead.
+
+---
+
+### 7.3 Provider: `GeminiMultimodalLangGraphProvider` (`gemini_multimodal_prov.py`)
+
+**Recommended for env-var configuration.** Uses LangGraph with **structured output** — no JSON parsing, no code fence stripping.
+
+**Graph:**
+
+```
+START → extract_node → classify_node → END
+```
+
+**`extract_node` (no AI call):**
+- Extracts candidate title from `title / headline / name / subject` fields
+- Extracts candidate image URL from `media_content[0].url` or common image field names
+- Cost: zero API calls
+
+**`classify_node` (one Gemini call with structured output):**
+- Builds a multimodal message: text payload + image URL if available
+- Calls `llm.with_structured_output(SingleClassification)` → Pydantic model returned directly (no `json.loads` needed)
+- If `is_crime=False`: returns `{"is_crime": False}`
+- If `is_crime=True`: builds the full article dict, falling back raw `link` for URL
+
+**Multimodal advantage:** Gemini can see the article's thumbnail image (e.g., crime scene photo, mug shot) and use it as an additional signal for classification and sub-category labelling.
+
+---
+
+### 7.4 Provider: `GeminiLangGraphProvider` (`gemini_langgraph_prov.py`)
+
+Simple LangGraph provider using LangChain's `ChatGoogleGenerativeAI`. Single `ainvoke()` call with system + human message. Uses `parse_single_output()` for JSON parsing (same as OpenAI provider). No multimodal, no structured output.
+
+---
+
+### 7.5 Provider: `AnthropicProvider` (`anthropic_prov.py`)
+
+Uses `anthropic.AsyncAnthropic`. Passes the same `SINGLE_PROCESS_PROMPT` as the system prompt and the raw payload as the user message. Uses `parse_single_output()` for JSON parsing.
+
+---
+
+### 7.6 AI Output Schema
+
+All providers produce a dict matching this shape after parsing:
+
+```python
+{
+    "is_crime": True,
+    "title": "...",              # original headline
+    "rewritten_title": "...",    # AI rephrased, ≤ 15 words, active voice
+    "url": "https://...",        # canonical URL (or raw link as fallback)
+    "description": "...",        # original source description (1-3 sentences)
+    "rewritten_description": "...",  # AI rephrased, 3-5 sentences
+    "image_url": "https://...",  # or None
+    "published_at": datetime,    # parsed to UTC datetime, or None
+    "sub_category": "murder",    # primary crime type string
+    "sub_category_ids": ["murder", "violence"],  # multi-label strings
+    "location": "Mumbai, India", # free text
+    "region": "south asia",
+    "imp_score": 72,             # 1-100
+    "content_hash": "abc123...", # added by IngestionService, not AI
+    "raw_payload": {...},        # original article dict
+}
+```
+
+After resolver pass, `sub_category_ids` becomes `[1, 2]` (int IDs), `category_ids` becomes `[1]` (parent int IDs), and `location_state_id` is added.
+
+---
+
+### 7.7 Importance Score (imp_score)
+
+The AI assigns 1–100 based on:
+
+| Range | Label | Examples |
+|---|---|---|
+| 1–20 | Hyperlocal / minor | Petty theft in a small town |
+| 21–40 | Local / notable | Single murder in a major city |
+| 41–60 | Regional / significant | Gang bust, notable fraud case |
+| 61–80 | National / high impact | Major terror foiled, senior official arrested |
+| 81–100 | International / breaking | Multi-city attack, political assassination |
+
+Factors: crime severity, number of victims, geographic scope, public official involvement.
+
+---
+
+## 8. Request Flows — End to End
+
+### 8.1 Automated ingestion (scheduler trigger)
+
+```
+APScheduler (every 5 min)
   │
-  ├── SourceRepository.get_all(active_only=True)
-  │     SELECT * FROM news_sources WHERE is_active = true
+  ├── run_ingestion_for_all_active_sources()
+  │     │
+  │     ├── SourceRepository.get_all(active_only=True) → [source1, source2, ...]
+  │     │
+  │     └── asyncio.gather([_ingest_one_source(s) for s in sources])
+  │           │
+  │           └── (for each source, own DB session)
+  │                 IngestionService.ingest(source)
+  │                   │
+  │                   ├── _fetch_items(source)
+  │                   │     └── RSSFetcher.fetch(url)    [or RestFetcher]
+  │                   │           → feedparser.entries → to_plain_dict() → list[dict]
+  │                   │
+  │                   ├── slice to AI_MAX_ITEMS_PER_RUN
+  │                   │
+  │                   ├── compute_content_hash(source_id, raw) per article
+  │                   │
+  │                   ├── raw_repo.store_batch()
+  │                   │     INSERT OR IGNORE INTO raw_ingestion
+  │                   │     → returns {hash→id}, set of unprocessed hashes
+  │                   │
+  │                   ├── _load_ai_provider()
+  │                   │     ai_provider_repo.get_active()
+  │                   │       → create_from_config(config)  [cached]
+  │                   │     OR get_env_fallback_provider()  [if no DB config]
+  │                   │
+  │                   ├── keyword pre-filter (_has_crime_keywords)
+  │                   │     → crime_candidates / pre_filtered_hashes
+  │                   │
+  │                   ├── asyncio.gather(process_with_semaphore per article)
+  │                   │     semaphore + rate_limiter.wait()
+  │                   │     → ai_provider.process(raw, source_type)
+  │                   │         [builds prompt, calls AI API, parses JSON]
+  │                   │         → article dict or None
+  │                   │
+  │                   ├── bucket results
+  │                   │     crime_articles / filtered_out_hashes / failed_hashes
+  │                   │
+  │                   ├── load_resolvers(db)
+  │                   │     SELECT id, name FROM state → LocationResolver
+  │                   │     CategoryResolver (enum-based, no DB)
+  │                   │
+  │                   ├── for each crime article:
+  │                   │     cat_resolver.resolve_all(sub_category_ids → int list)
+  │                   │     cat_resolver.resolve_categories_from_ids(→ parent int list)
+  │                   │     loc_resolver.resolve(location → state_id or None)
+  │                   │
+  │                   ├── filter_article_repo.insert_batch(crime_articles, hash_to_raw_id)
+  │                   │     INSERT INTO filtered_articles ... RETURNING url→id
+  │                   │
+  │                   ├── post_processed_repo.insert_batch(crime_articles, url_to_filter_id)
+  │                   │     INSERT INTO post_processed_articles ...
+  │                   │
+  │                   └── raw_repo.mark_filtered / mark_filtered_out / mark_failed
   │
-  └── For each source (concurrent via asyncio.gather):
-        IngestionService.ingest(source)
-          │
-          ├─ 1. FETCH
-          │     RSSFetcher.fetch(url)  →  feedparser (thread pool)
-          │  or RestFetcher.fetch(url)  →  httpx async
-          │
-          ├─ 2. STORE RAW
-          │     raw_ingestion_repo.store_batch()
-          │     INSERT INTO raw_ingestion ... ON CONFLICT (content_hash) DO NOTHING
-          │
-          ├─ 3. LOAD AI
-          │     ai_processor.get_active_provider(ai_provider_repo)
-          │     → reads ai_provider_configs WHERE is_active = true
-          │     → falls back to GEMINI_API_KEY env if no DB config
-          │
-          ├─ 4. STAGE 1 (concurrent, rate-limited)
-          │     for each raw item:
-          │       [rate limiter + semaphore]
-          │       ai_provider.process(raw_payload, source_type)
-          │       → AI returns JSON → CombinedOutput Pydantic validation
-          │
-          ├─ 5. SPLIT: crime / non-crime / failed
-          │
-          ├─ 6. RESOLVE FKs (enum + DB state lookup)
-          │     sub_category_ids, category_ids, sub_category_id, location_state_id
-          │
-          ├─ 7. STAGE 2 (concurrent, rate-limited)
-          │     for each crime article:
-          │       DuckDuckGo.ainvoke(title)  →  search_context string
-          │       [rate limiter + semaphore]
-          │       ai_provider.post_process(article, search_context)
-          │       → AI returns JSON → PostProcessOutput Pydantic validation
-          │
-          ├─ 8. WRITE Stage 1
-          │     filter_article_repo.insert_batch()
-          │     INSERT INTO filtered_articles ... ON CONFLICT (main_url) DO UPDATE
-          │
-          ├─ 9. WRITE Stage 2
-          │     post_processed_repo.insert_batch()
-          │     INSERT INTO post_processed_articles ... ON CONFLICT (filter_article_id) DO UPDATE
-          │
-          └─ 10. AUDIT
-                raw_ingestion_repo.mark_filtered / mark_filtered_out / mark_failed
-```
-
-### Scheduled publishing (every 5 minutes + 30s offset)
-
-```
-scheduler.py: run_publishing()
-  │
-  └── PublishingService.publish(top_n=20)
+  └── (if any OK) → run_publishing()
         │
-        ├── post_processed_repo.get_all(ordered by imp_score DESC, NOT NULL)
-        │     ← uses partial index: ix_post_processed_articles_imp_score_scored
-        │
-        ├── for each article:
-        │     rank_score = imp_score × _time_decay_factor(published_at)
-        │
-        └── final_article_repo.upsert_batch(ranked_articles)
-              INSERT INTO final_articles ... ON CONFLICT (post_processed_article_id) DO UPDATE SET rank_score = ...
+        └── PublishingService.publish(top_n=20)
+              │
+              ├── post_processed_repo.get_top_by_imp_score(limit=20)
+              │     SELECT ... ORDER BY imp_score DESC LIMIT 20
+              │
+              ├── for each: rank_score = imp_score × time_decay_factor
+              │
+              └── final_article_repo.upsert_batch(rows)
+                    INSERT INTO final_articles ...
+                    ON CONFLICT (post_processed_article_id)
+                    DO UPDATE SET rank_score = ..., title = ..., ...
 ```
 
-### Frontend reads the feed
+---
+
+### 8.2 `POST /ingest/` — Manual ingestion trigger
 
 ```
-GET /final-articles/?limit=20&offset=0
+HTTP POST /ingest/  {"source_id": 2}
   │
-  └── FinalArticleRepository.get_feed()
-        SELECT * FROM final_articles ORDER BY rank_score DESC LIMIT 20
-        ← uses ix_final_articles_rank_score index
+  ├── routes_ingest.trigger_ingest()
+  │     │
+  │     ├── source_repo.get_by_id(2)    → Source ORM row
+  │     ├── validate source.type in {"rss", "rest"}
+  │     └── svc.ingest(source)          [same IngestionService.ingest() as scheduler]
+  │           └── (all steps as §8.1)
+  │
+  └── return IngestResponse(source_id=2, source_type="rss", ingested=5)
 ```
 
 ---
 
-## 7. Database Schema
+### 8.3 `GET /final-articles/` — Public feed
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        news_sources                             │
-│  id · name · type · url(UNIQUE) · config(JSONB) · is_active     │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ 1:N  CASCADE
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                        raw_ingestion                            │
-│  id · source_id · content_hash(UNIQUE) · raw_payload(JSONB)     │
-│  status · normalized_by · error_message · retry_count           │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ 1:1  SET NULL
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      filtered_articles                          │
-│  id · raw_ingestion_id(UNIQUE) · title · description            │
-│  main_url(UNIQUE) · image_url · published_at · created_at       │
-│  sub_category_ids(JSONB GIN) · category_ids(JSONB GIN)          │
-│  location_state_id ──────────────────────────────┐             │
-└────────────────────────────┬─────────────────────│─────────────┘
-                             │ 1:1  SET NULL        │ FK
-                             ▼                      ▼
-┌────────────────────────────────────────┐  ┌───────────────┐
-│       post_processed_articles          │  │     state     │
-│  id · filter_article_id(UNIQUE)        │  │  id · name    │
-│  title · description · image_url       │  │  country_id   │
-│  reference_urls(TEXT[])                │  └───────┬───────┘
-│  published_at · imp_score(INT 1-100)   │          │ FK
-│  sub_category_id ─────────────────┐   │  ┌───────┴───────┐
-│  location_id ──────────────────────────┘  │    country    │
-└────────────────────────────┬───────┘      │  id · name    │
-                             │              └───────────────┘
-         sub_category_id FK  │
-                             ▼
-┌───────────────────────────────────────┐
-│          master_sub_category          │
-│  id · category_id · name · is_active  │
-└────────────────┬──────────────────────┘
-                 │ FK
-                 ▼
-        ┌─────────────────────┐
-        │   master_category   │
-        │  id · name · ...    │
-        └─────────────────────┘
-
-post_processed_articles
-         │ 1:1  SET NULL
-         ▼
-┌────────────────────────────────────────────────┐
-│                  final_articles                │
-│  id · post_processed_article_id(UNIQUE)        │
-│  title · description · image_url               │
-│  reference_urls(TEXT[]) · rank_score(FLOAT)    │
-│  created_at                                    │
-└────────────────────────────────────────────────┘
-
-┌───────────────────────────────────────────────┐
-│              ai_provider_configs              │
-│  id · name · provider · model · api_key       │
-│  base_url · is_active(partial UNIQUE)         │
-└───────────────────────────────────────────────┘
+HTTP GET /final-articles/?limit=20&offset=0&sub_category_id=1&q=murder
+  │
+  ├── routes_final_articles.list_final_articles()
+  │     │
+  │     ├── final_article_repo.get_feed(limit, offset, sub_category_id, q)
+  │     │     SELECT fa.*, pp.sub_category_id
+  │     │     FROM final_articles fa
+  │     │     JOIN post_processed_articles pp ON pp.id = fa.post_processed_article_id
+  │     │     [WHERE pp.sub_category_id = ? AND (fa.title ILIKE ? OR fa.description ILIKE ?)]
+  │     │     ORDER BY fa.rank_score DESC
+  │     │     LIMIT 20 OFFSET 0
+  │     │
+  │     └── final_article_repo.count(sub_category_id, q)
+  │
+  └── return FinalArticleListResponse(total=N, items=[...])
 ```
 
 ---
 
-## 8. AI Pipeline Deep Dive
+### 8.4 `POST /final-articles/publish` — Manual publish trigger
 
-### Provider selection order
+```
+HTTP POST /final-articles/publish?top_n=20
+  │
+  ├── routes_final_articles.trigger_publishing()
+  │     │
+  │     └── PublishingService.publish(top_n=20)
+  │           [same as §8.1 publishing sub-flow]
+  │
+  └── return {"published": 20, "top_n": 20}
+```
+
+---
+
+### 8.5 `POST /ai-providers/` → `PATCH /ai-providers/{id}/activate`
+
+```
+# Register
+POST /ai-providers/
+  Body: {"name": "Gemini Flash", "provider": "gemini", "model": "gemini-2.5-flash",
+         "api_key": "AIza...", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"}
+  └── ai_provider_repo.create(payload) → INSERT INTO ai_provider_configs
+  └── return AIProviderResponse (api_key is NEVER returned)
+
+# Activate
+PATCH /ai-providers/3/activate
+  └── ai_provider_repo.activate(3)
+        UPDATE ai_provider_configs SET is_active=false WHERE is_active=true
+        UPDATE ai_provider_configs SET is_active=true  WHERE id=3
+  └── return {"activated_id": 3, "message": "'Gemini Flash' (gemini:gemini-2.5-flash) is now active"}
+
+# Effect: next ingestion run → IngestionService._load_ai_provider()
+#          → ai_provider_repo.get_active() → config.id=3
+#          → create_from_config(config) → OpenAICompatibleProvider (cached)
+```
+
+---
+
+### 8.6 AI provider resolution at each ingest run
 
 ```
 IngestionService._load_ai_provider()
   │
-  ├─ 1. ai_provider_repo.get_active()
-  │       SELECT FROM ai_provider_configs WHERE is_active = true
-  │       → if found: provider_factory.create_from_config(config)
+  ├── ai_provider_repo.get_active()
+  │     SELECT * FROM ai_provider_configs WHERE is_active=true LIMIT 1
+  │     → config OR None
   │
-  ├─ 2. settings.GEMINI_API_KEY is set?
-  │       → GeminiMultimodalLangGraphProvider("gemini-2.0-flash")  ← recommended
+  ├── if config: create_from_config(config)
+  │               └── provider_factory._provider_cache[(id, model, key)]
+  │                   hit  → return cached AIProvider instance
+  │                   miss → _build(config) → new provider + cache it
   │
-  ├─ 3. settings.ANTHROPIC_API_KEY is set?
-  │       → AnthropicProvider("claude-haiku-4-5-20251001")
-  │
-  └─ 4. None → articles dropped at AI stage, logged as warnings
+  └── if no config: get_env_fallback_provider()
+                    GEMINI_API_KEY set?
+                      → GeminiMultimodalLangGraphProvider (recommended)
+                      → fallback: GeminiLangGraphProvider
+                    ANTHROPIC_API_KEY set?
+                      → AnthropicProvider
+                    neither → None → skip AI for this run
 ```
-
-### Stage 1 prompt output contract
-
-```json
-{
-  "title": "string — extracted verbatim",
-  "url": "string",
-  "description": "string | null — 1–3 sentences, HTML-cleaned",
-  "image_url": "string | null",
-  "published_at": "ISO 8601 string | null",
-  "is_crime": true,
-  "sub_category_ids": [1, 3],
-  "sub_category": "murder",
-  "category": "Violent Crime",
-  "location": "Mumbai, Maharashtra",
-  "region": "West",
-  "importance_score": 7
-}
-```
-
-### Stage 2 prompt output contract
-
-```json
-{
-  "rewritten_title": "string — rephrased, max 15 words",
-  "rewritten_description": "string — ~100 words, rephrased",
-  "reference_urls": ["https://...", "https://..."],
-  "imp_score": 72
-}
-```
-
-### Why two stages?
-
-Stage 1 is fast and cheap — it extracts and classifies. Running it on all articles (including non-crime) at low cost lets us filter aggressively.
-
-Stage 2 is slower and more expensive — it rewrites, searches the web, and scores. Running it only on the crime-relevant subset (typically 10–30% of all ingested articles) keeps costs manageable.
 
 ---
 
-## 9. Background Scheduler
+## 9. API Reference & Usage Guide
 
+### Base URL
 ```
-app startup (lifespan)
-  └── start_scheduler()
-        │
-        ├── Job 1: ingestion_all_sources
-        │     trigger: interval, every INGEST_INTERVAL_MINUTES minutes
-        │     max_instances: 1  (no pile-up if previous run is still going)
-        │
-        └── Job 2: publish_final_feed
-              trigger: interval, every PUBLISH_INTERVAL_MINUTES minutes
-                        + PUBLISH_OFFSET_SECONDS seconds delay
-              max_instances: 1
-              (30s offset ensures Stage 2 data is written before ranking runs)
+http://localhost:8000
 ```
+
+### Interactive docs
+```
+http://localhost:8000/docs   (Swagger UI)
+http://localhost:8000/redoc  (ReDoc)
+```
+
+---
+
+### Feed (public)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/final-articles/` | Ranked crime news feed |
+| GET | `/final-articles/{id}` | Single ranked article |
+| POST | `/final-articles/publish` | Force-refresh the feed ranking |
+
+**GET `/final-articles/` query params:**
+
+| Param | Type | Default | Description |
+|---|---|---|---|
+| `limit` | int | 20 | Articles per page (max 100) |
+| `offset` | int | 0 | Pagination offset |
+| `sub_category_id` | int | null | Filter by crime type (1=murder, 2=theft, …) |
+| `q` | string | null | Keyword search in title + description |
+
+**Example response:**
+```json
+{
+  "total": 147,
+  "limit": 20,
+  "offset": 0,
+  "items": [
+    {
+      "id": 91,
+      "title": "Police arrest four suspects in Delhi gang robbery case",
+      "description": "Delhi Police arrested four men connected to a series of armed robberies...",
+      "image_url": "https://...",
+      "rank_score": 60.0,
+      "created_at": "2026-02-26T08:14:00Z"
+    }
+  ]
+}
+```
+
+---
+
+### Pipeline inspection (internal/debug)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/filter-articles/` | Stage-1 crime-filtered articles |
+| GET | `/filter-articles/{id}` | Single filter article |
+| GET | `/post-processed/` | Stage-2 enriched articles |
+| GET | `/post-processed/{id}` | Single post-processed article |
+
+**GET `/post-processed/` extra query params:**
+
+| Param | Type | Description |
+|---|---|---|
+| `from_date` | ISO 8601 | Published on or after |
+| `to_date` | ISO 8601 | Published on or before |
+
+---
+
+### Admin — Sources
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/sources/` | List all sources (`?include_inactive=true`) |
+| POST | `/sources/` | Add a new RSS or REST source |
+| GET | `/sources/{id}` | Get source by ID |
+| PATCH | `/sources/{id}` | Update (pause: `{"is_active": false}`) |
+| DELETE | `/sources/{id}` | Permanently delete |
+
+**POST `/sources/` body:**
+```json
+{
+  "name": "NDTV Crime",
+  "url": "https://feeds.feedburner.com/ndtvnews-crime",
+  "type": "rss",
+  "is_active": true,
+  "config": {}
+}
+```
+
+---
+
+### Admin — Ingestion
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/ingest/` | Trigger immediate ingestion for a source |
+
+**POST `/ingest/` body:**
+```json
+{"source_id": 2}
+```
+
+**Response:**
+```json
+{"source_id": 2, "source_type": "rss", "ingested": 4}
+```
+
+---
+
+### Admin — AI Providers
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/ai-providers/` | List all providers |
+| POST | `/ai-providers/` | Register a new provider |
+| GET | `/ai-providers/active` | Get currently active provider |
+| GET | `/ai-providers/{id}` | Get provider by ID |
+| PATCH | `/ai-providers/{id}/activate` | Activate a provider |
+| DELETE | `/ai-providers/active` | Deactivate all (fall back to env vars) |
+| DELETE | `/ai-providers/{id}` | Delete a provider |
+
+**POST `/ai-providers/` body:**
+```json
+{
+  "name": "Gemini 2.5 Flash",
+  "provider": "gemini",
+  "model": "gemini-2.5-flash",
+  "api_key": "AIzaSy...",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/"
+}
+```
+
+Supported `provider` values: `openai`, `gemini`, `anthropic`, `gemini_langgraph`, `gemini_multimodal`, `custom`
+
+---
+
+### Master Data
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/master/categories` | List crime categories |
+| GET | `/master/sub-categories` | List crime sub-categories |
+| GET | `/master/states` | List Indian states |
+
+---
+
+### Health
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | `{"status": "ok"}` |
 
 ---
 
 ## 10. Configuration Reference
 
-All values set in `.env`. Sensible defaults shown — only `DATABASE_URL` is required.
+All settings are read from `.env` via pydantic-settings (`app/core/config.py`).
 
-```
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname   # REQUIRED
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | str | **required** | PostgreSQL async URL (`postgresql+asyncpg://...`) |
+| `GEMINI_API_KEY` | str | None | Enables Gemini env-fallback provider |
+| `ANTHROPIC_API_KEY` | str | None | Enables Anthropic env-fallback provider |
+| `AI_REQUESTS_PER_MINUTE` | int | 5 | API rate limit (0 = unlimited) |
+| `AI_RETRY_ATTEMPTS` | int | 3 | Retries on rate-limit errors |
+| `AI_RETRY_DELAY_SECONDS` | float | 15.0 | Base delay for exponential back-off |
+| `AI_MAX_ITEMS_PER_RUN` | int | 10 | Max articles fetched per source per run |
+| `INGEST_INTERVAL_MINUTES` | int | 5 | Scheduler ingestion interval |
+| `PUBLISH_INTERVAL_MINUTES` | int | 5 | Scheduler publishing interval |
+| `PUBLISH_OFFSET_SECONDS` | int | 30 | Publishing job offset after ingestion job |
+| `FEED_TOP_N` | int | 20 | Articles selected for `final_articles` |
+| `DECAY_FRESH` | float | 1.00 | Time-decay: articles < 6 h old |
+| `DECAY_RECENT` | float | 0.75 | Time-decay: articles 6–24 h old |
+| `DECAY_DAY` | float | 0.50 | Time-decay: articles 1–3 days old |
+| `DECAY_WEEK` | float | 0.25 | Time-decay: articles 3–7 days old |
+| `DECAY_OLD` | float | 0.10 | Time-decay: articles > 7 days old |
+| `DEBUG` | bool | False | FastAPI debug mode |
 
-GEMINI_API_KEY=AIzaSy...          # recommended — activates GeminiMultimodal provider
-ANTHROPIC_API_KEY=sk-ant-...      # fallback if no GEMINI_API_KEY
-DEBUG=false                       # true logs all SQL queries
+**Free-tier recommendations (Gemini 5 RPM):**
 
-AI_REQUESTS_PER_MINUTE=5          # free Gemini tier limit
+```env
+AI_REQUESTS_PER_MINUTE=5
+AI_MAX_ITEMS_PER_RUN=10
 AI_RETRY_ATTEMPTS=3
-AI_RETRY_DELAY_SECONDS=15.0
-
-INGEST_INTERVAL_MINUTES=5
-PUBLISH_INTERVAL_MINUTES=5
-PUBLISH_OFFSET_SECONDS=30
-FEED_TOP_N=20
-
-DUCKDUCKGO_TIMEOUT_SECONDS=10.0
-
-DECAY_FRESH=1.00    # < 6h
-DECAY_RECENT=0.75   # 6–24h
-DECAY_DAY=0.50      # 1–3d
-DECAY_WEEK=0.25     # 3–7d
-DECAY_OLD=0.10      # > 7d
+AI_RETRY_DELAY_SECONDS=15
 ```
 
 ---
 
-## 11. Development Commands
+## 11. Adding a New Provider
 
-```bash
-# Install dependencies
-uv sync
+1. **Create the provider class** in `app/services/normalization/providers/your_prov.py`:
 
-# Run dev server with auto-reload
-.venv/bin/uvicorn app.main:app --reload
+```python
+from app.services.normalization.providers.base import (
+    AIProvider, SINGLE_PROCESS_PROMPT,
+    build_process_message, parse_single_output,
+)
 
-# Apply all pending migrations
-.venv/bin/alembic upgrade head
+class YourProvider(AIProvider):
+    def __init__(self, api_key: str, model: str) -> None:
+        self._model = model
+        # initialise your SDK client
 
-# Roll back one migration
-.venv/bin/alembic downgrade -1
+    @property
+    def model_id(self) -> str:
+        return f"ai:your_provider:{self._model}"
 
-# Check current migration state
-.venv/bin/alembic current
-
-# View migration history
-.venv/bin/alembic history
-
-# Create a new migration after changing models
-.venv/bin/alembic revision --autogenerate -m "describe_change"
+    async def process(self, raw_payload: dict, source_type: str) -> dict | None:
+        user_msg = build_process_message(raw_payload, source_type)
+        # call your API with SINGLE_PROCESS_PROMPT as system + user_msg as user
+        text = ...
+        return parse_single_output(text, raw_payload)
 ```
 
-**End-to-end manual test:**
+2. **Register it** in `provider_factory.py`:
 
-```bash
-# 1. Start server
-.venv/bin/uvicorn app.main:app --reload
+```python
+from app.services.normalization.providers.your_prov import YourProvider
 
-# 2. Register a Gemini AI provider
-curl -X POST http://localhost:8000/ai-providers/ \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Gemini","provider":"gemini_multimodal","model":"gemini-2.0-flash","api_key":"AIzaSy..."}'
-# → {"id":1, ...}
-
-# 3. Activate it
-curl -X PATCH http://localhost:8000/ai-providers/1/activate
-
-# 4. Add a crime news source
-curl -X POST http://localhost:8000/sources/ \
-  -H "Content-Type: application/json" \
-  -d '{"name":"India News","type":"rss","url":"https://...crime-feed-url.../rss"}'
-# → {"id":2, ...}
-
-# 5. Trigger ingestion immediately
-curl -X POST http://localhost:8000/ingest/ \
-  -H "Content-Type: application/json" \
-  -d '{"source_id": 2}'
-# → {"source_id":2,"source_type":"rss","ingested":14}
-
-# 6. Trigger publishing
-curl -X POST "http://localhost:8000/final-articles/publish"
-
-# 7. Read the ranked feed
-curl "http://localhost:8000/final-articles/?limit=10"
-
-# 8. Browse all endpoints
-open http://localhost:8000/docs
+# in _build():
+if provider == "your_provider":
+    return YourProvider(api_key=api_key, model=model)
 ```
+
+3. **Add the provider name** to `SUPPORTED_PROVIDERS` in `app/models/ai_provider.py`.
+
+4. **Test** with `POST /ai-providers/` → `PATCH /{id}/activate` → `POST /ingest/`.
+
+No other files need changes.

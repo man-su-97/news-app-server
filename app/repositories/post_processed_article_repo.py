@@ -1,19 +1,3 @@
-"""
-app/repositories/post_processed_article_repo.py — Post-Processed Articles DB Operations
-========================================================================================
-All database operations for the "post_processed_articles" table.
-
-Pipeline position:  filter_articles → [here]
-
-This is the FINAL stage table — what the frontend reads for the news feed.
-insert_batch() is called by the ingestion service after AI post-processing.
-get_all/get_by_id/count are used by the GET /articles/ API endpoints.
-
-insert_batch() upsert key is filter_article_id (unique constraint):
-  - Same filter article re-processed → updates the post-processed row in-place.
-  - This keeps the feed current if a publisher corrects an article.
-"""
-
 import logging
 from datetime import datetime
 
@@ -27,8 +11,6 @@ logger = logging.getLogger(__name__)
 
 
 class PostProcessedArticleRepository:
-    """Handles all database operations for the post_processed_articles table."""
-
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
@@ -37,30 +19,12 @@ class PostProcessedArticleRepository:
         articles: list[dict],
         url_to_filter_id: dict[str, int],
     ) -> int:
-        """Upsert a batch of fully-enriched articles.
-
-        Args:
-            articles: list of AI-processed dicts, each containing:
-                - title, description, image_url, published_at
-                - reference_urls (list[str] | None)
-                - url (used to look up filter_article_id)
-                - sub_category_id, location_id (may be None until master data exists)
-            url_to_filter_id: {main_url: filter_article_id} from filter stage.
-
-        Returns:
-            Count of rows inserted or updated.
-
-        ON CONFLICT (filter_article_id) DO UPDATE:
-            Re-running post-processing on the same article updates title,
-            description, reference_urls — useful when AI improves.
-        """
         if not articles:
             return 0
 
         rows = [
             {
                 "filter_article_id": url_to_filter_id.get(a["url"]),
-                # Stage 2 post_process() rewrites these; fall back to stage 1 values
                 "title": a.get("rewritten_title") or a["title"],
                 "description": (
                     a.get("rewritten_description")
@@ -68,12 +32,10 @@ class PostProcessedArticleRepository:
                     or a.get("description")
                 ),
                 "image_url": a.get("image_url"),
-                # Stage 2 fills reference_urls; stage 1 leaves it empty
-                "reference_urls": a.get("reference_urls") or a.get("stage2_reference_urls"),
+                "reference_urls": a.get("reference_urls"),
                 "published_at": a.get("published_at"),
                 "sub_category_id": a.get("sub_category_id"),
                 "location_id": a.get("location_id"),
-                # Stage 2 imp_score: 1-100. None if stage 2 not run / failed.
                 "imp_score": a.get("imp_score"),
             }
             for a in articles
@@ -112,12 +74,6 @@ class PostProcessedArticleRepository:
         from_date: datetime | None = None,
         to_date: datetime | None = None,
     ) -> list[PostProcessedArticle]:
-        """Paginated list ordered by published_at descending.
-
-        sub_category_id: exact FK match on sub_category_id column.
-        q: case-insensitive keyword search across title and description.
-        from_date / to_date: filter by published_at range (inclusive).
-        """
         stmt = select(PostProcessedArticle).order_by(
             PostProcessedArticle.published_at.desc().nulls_last()
         )
@@ -139,9 +95,7 @@ class PostProcessedArticleRepository:
 
     async def get_by_id(self, article_id: int) -> PostProcessedArticle | None:
         result = await self.db.execute(
-            select(PostProcessedArticle).where(
-                PostProcessedArticle.id == article_id
-            )
+            select(PostProcessedArticle).where(PostProcessedArticle.id == article_id)
         )
         return result.scalar_one_or_none()
 
@@ -169,11 +123,6 @@ class PostProcessedArticleRepository:
         return result.scalar_one()
 
     async def get_top_by_imp_score(self, limit: int = 20) -> list[PostProcessedArticle]:
-        """Return top N articles ordered by imp_score descending.
-
-        Used by PublishingService to select candidates for final_articles.
-        Articles with NULL imp_score are excluded (they have not been post-processed).
-        """
         stmt = (
             select(PostProcessedArticle)
             .where(PostProcessedArticle.imp_score.is_not(None))
