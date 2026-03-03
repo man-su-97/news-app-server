@@ -84,6 +84,20 @@ def create_gemini_from_env(api_key: str, model: str) -> AIProvider:
     return _provider_cache[cache_key]
 
 
+def create_ollama_from_env(base_url: str, model: str) -> AIProvider:
+    """Build an OpenAICompatibleProvider pointed at a local Ollama server.
+
+    Ollama does not require a real API key — we pass "ollama" as a placeholder.
+    Cache key uses "env:ollama" prefix to distinguish from DB-configured providers.
+    """
+    cache_key = ("env:ollama", model, base_url)
+    if cache_key not in _provider_cache:
+        _provider_cache[cache_key] = OpenAICompatibleProvider(
+            api_key="ollama", model=model, base_url=base_url
+        )
+    return _provider_cache[cache_key]
+
+
 def create_gemini_multimodal_from_env(api_key: str, model: str) -> AIProvider:
     """Build a GeminiMultimodalLangGraphProvider from env-var credentials.
 
@@ -135,9 +149,17 @@ def _build(config: AIProviderConfig) -> AIProvider:
         # Supports image-in-message for crime scene classification.
         return GeminiMultimodalLangGraphProvider(api_key=api_key, model=model)
 
+    if provider == "ollama":
+        # Local Ollama server — OpenAI-compatible endpoint at localhost:11434/v1.
+        # base_url defaults to PROVIDER_BASE_URLS["ollama"] if user didn't override.
+        # api_key is a placeholder ("ollama") since Ollama doesn't require auth.
+        return OpenAICompatibleProvider(
+            api_key=api_key or "ollama", model=model, base_url=base_url
+        )
+
     if provider in ("openai", "gemini", "custom"):
         # OpenAI-compatible endpoint — works for OpenAI, Gemini (via OpenAI format),
-        # and any self-hosted server (Ollama, vLLM, LM Studio).
+        # and any self-hosted server (vLLM, LM Studio, remote Ollama).
         # base_url=None uses the OpenAI SDK's default (api.openai.com).
         return OpenAICompatibleProvider(api_key=api_key, model=model, base_url=base_url)
 

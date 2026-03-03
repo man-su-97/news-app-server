@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.models.ai_provider import PROVIDER_DEFAULT_MODELS, SUPPORTED_PROVIDERS
 
 _PROVIDER_LITERAL = Literal[
-    "anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "custom"
+    "anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "ollama", "custom"
 ]
 
 
@@ -17,39 +17,45 @@ class AIProviderCreate(BaseModel):
     provider: _PROVIDER_LITERAL = Field(
         ...,
         description=(
-            "**gemini_multimodal** — Gemini + LangGraph, multimodal image support, structured output *(recommended)*  \n"
+            "**ollama** — Local Ollama server, no API key needed, base_url auto-set  \n"
+            "**gemini_multimodal** — Gemini + LangGraph, multimodal image support, structured output  \n"
             "**gemini_langgraph** — Gemini + LangGraph web search agent  \n"
             "**gemini** — Gemini via Google's OpenAI-compatible endpoint  \n"
             "**anthropic** — Claude models via Anthropic SDK  \n"
             "**openai** — GPT models via OpenAI API  \n"
-            "**custom** — Any OpenAI-compatible server (Ollama, vLLM, LM Studio)"
+            "**custom** — Any OpenAI-compatible server (vLLM, LM Studio, remote Ollama)"
         ),
-        examples=["gemini_multimodal"],
+        examples=["ollama"],
     )
 
     model: str = Field(
         ...,
         description=(
             "Model identifier for the chosen provider.  \n"
+            "**ollama**: your locally installed model name (e.g. `dengcao/Qwen3-30B-A3B-Instruct-2507:latest`)  \n"
             "**gemini_langgraph / gemini**: `gemini-2.0-flash`, `gemini-2.5-flash`  \n"
             "**anthropic**: `claude-haiku-4-5-20251001`  \n"
             "**openai**: `gpt-4o-mini`  \n"
             "**custom**: your model name as configured in the server"
         ),
-        examples=["gemini-2.5-flash"],
+        examples=["dengcao/Qwen3-30B-A3B-Instruct-2507:latest"],
     )
 
     api_key: str = Field(
-        ...,
-        description="API key for the provider. Never returned in any response after saving.",
-        examples=["AIzaSy..."],
+        default="ollama",
+        description=(
+            "API key for the provider. Never returned in any response after saving.  \n"
+            "**ollama**: leave blank or use `ollama` — no real key needed."
+        ),
+        examples=["ollama"],
     )
 
     base_url: str | None = Field(
         default=None,
         description=(
             "Override the provider base URL.  \n"
-            "**Required** for `custom` (e.g. `http://localhost:11434/v1` for Ollama).  \n"
+            "**ollama**: auto-set to `http://localhost:11434/v1` — only set this to override (e.g. remote Ollama).  \n"
+            "**Required** for `custom` (e.g. `http://192.168.1.10:11434/v1`).  \n"
             "**gemini** is pre-filled automatically if omitted.  \n"
             "Leave `null` for anthropic, openai, gemini_langgraph."
         ),
@@ -58,21 +64,21 @@ class AIProviderCreate(BaseModel):
     model_config = {
         "json_schema_extra": {
             "example": {
-                "name": "Gemini 2.5 Flash",
-                "provider": "gemini",
-                "model": "gemini-2.5-flash",
-                "api_key": "AIzaSy...",
-                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+                "name": "Local Ollama Qwen3",
+                "provider": "ollama",
+                "model": "dengcao/Qwen3-30B-A3B-Instruct-2507:latest",
+                "api_key": "ollama",
+                "base_url": None,
             }
         }
     }
 
     @model_validator(mode="after")
-    def validate_custom_needs_base_url(self) -> "AIProviderCreate":
+    def validate_provider_fields(self) -> "AIProviderCreate":
         if self.provider == "custom" and not self.base_url:
             raise ValueError(
                 "base_url is required for provider='custom'. "
-                "Example: http://localhost:11434/v1"
+                "Example: http://192.168.1.10:11434/v1"
             )
         return self
 

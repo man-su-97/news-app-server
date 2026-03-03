@@ -27,6 +27,7 @@ from app.services.normalization.provider_factory import (
     create_from_env,
     create_gemini_from_env,
     create_gemini_multimodal_from_env,
+    create_ollama_from_env,
 )
 from app.services.normalization.providers.base import AIProvider
 
@@ -42,6 +43,8 @@ def get_env_fallback_provider() -> AIProvider | None:
     """Return an AI provider built from environment variables, or None.
 
     Resolution order (first available wins):
+
+      0. OLLAMA_MODEL  → OpenAICompatibleProvider via local Ollama  ← LOCAL / NO KEY NEEDED
 
       1. GEMINI_API_KEY → GeminiMultimodalLangGraphProvider  ← RECOMMENDED
             Two-graph LangGraph pipeline with:
@@ -64,6 +67,15 @@ def get_env_fallback_provider() -> AIProvider | None:
     Instances are cached in provider_factory._provider_cache for the process
     lifetime, so repeated calls (every scheduler run) reuse the same client.
     """
+    if settings.OLLAMA_MODEL:
+        try:
+            return create_ollama_from_env(
+                base_url=settings.OLLAMA_URL,
+                model=settings.OLLAMA_MODEL,
+            )
+        except Exception as exc:
+            logger.error("Failed to build Ollama env-var provider: %s", exc)
+
     if settings.GEMINI_API_KEY:
         # Try multimodal first (recommended path)
         try:

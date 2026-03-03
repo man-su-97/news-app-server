@@ -140,6 +140,8 @@ def _extract_json(text: str) -> str:
     text = re.sub(r"^```(?:json)?\s*\n?", "", text)
     text = re.sub(r"\n?```\s*$", "", text)
     text = text.strip()
+    # Strip thinking blocks — Qwen3 uses <think>, Claude uses <thinking>
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     text = re.sub(r"<thinking>.*?</thinking>", "", text, flags=re.DOTALL).strip()
     start = text.find("{")
     end = text.rfind("}")

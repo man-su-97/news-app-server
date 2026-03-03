@@ -99,25 +99,44 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     ))
 
 
-_global_rate_limiter: "_RateLimiter | None" = None
-_global_semaphore: "asyncio.Semaphore | None" = None
+# Per-provider-type limiter cache: { provider_type → (rate_limiter, semaphore) }
+_limiter_cache: dict[str, tuple["_RateLimiter", asyncio.Semaphore]] = {}
 
 
-def _get_global_limiter() -> tuple["_RateLimiter", asyncio.Semaphore]:
-    global _global_rate_limiter, _global_semaphore
-    if _global_rate_limiter is None:
-        rpm = settings.AI_REQUESTS_PER_MINUTE
-        _global_rate_limiter = _RateLimiter(rpm)
-        _global_semaphore = asyncio.Semaphore(_concurrency_from_rpm(rpm))
+def _limits_for_provider(provider_type: str) -> tuple[int, int]:
+    """Return (requests_per_minute, max_items_per_run) for the given provider type."""
+    if provider_type == "ollama":
+        return settings.OLLAMA_REQUESTS_PER_MINUTE, settings.OLLAMA_MAX_ITEMS_PER_RUN
+    if provider_type in (
+        "gemini", "gemini_langgraph", "gemini_multimodal", "anthropic", "openai", "custom"
+    ):
+        return settings.CLOUD_REQUESTS_PER_MINUTE, settings.CLOUD_MAX_ITEMS_PER_RUN
+    return settings.AI_REQUESTS_PER_MINUTE, settings.AI_MAX_ITEMS_PER_RUN
+
+
+def _get_limiter_for(provider_type: str) -> tuple["_RateLimiter", asyncio.Semaphore]:
+    if provider_type not in _limiter_cache:
+        rpm, _ = _limits_for_provider(provider_type)
+        limiter = _RateLimiter(rpm)
+        # Ollama: single GPU runs one inference at a time — enforce concurrency=1
+        # to avoid queuing multiple requests in VRAM simultaneously.
+        concurrency = (
+            settings.OLLAMA_CONCURRENCY
+            if provider_type == "ollama"
+            else _concurrency_from_rpm(rpm)
+        )
+        semaphore = asyncio.Semaphore(concurrency)
         logger.info(
-            "AI rate limiter initialised — RPM=%s, concurrency=%d, "
+            "AI rate limiter for %r — RPM=%s, concurrency=%d, "
             "retry_attempts=%d, retry_delay=%.0fs",
+            provider_type,
             rpm if rpm > 0 else "unlimited",
-            _concurrency_from_rpm(rpm),
+            concurrency,
             settings.AI_RETRY_ATTEMPTS,
             settings.AI_RETRY_DELAY_SECONDS,
         )
-    return _global_rate_limiter, _global_semaphore  # type: ignore[return-value]
+        _limiter_cache[provider_type] = (limiter, semaphore)
+    return _limiter_cache[provider_type]
 
 
 class IngestionService:
@@ -144,12 +163,23 @@ class IngestionService:
             logger.info("No items fetched from source_id=%s", source.id)
             return 0
 
-        if len(raw_items) > settings.AI_MAX_ITEMS_PER_RUN:
-            logger.debug(
-                "Capping fetch from %d → %d items — source_id=%s",
-                len(raw_items), settings.AI_MAX_ITEMS_PER_RUN, source.id,
+        # Load provider first so we know its type (determines rate limits + item cap).
+        ai_provider, provider_type = await self._load_ai_provider()
+        if ai_provider is None:
+            logger.warning(
+                "No AI provider configured — skipping source_id=%s. "
+                "Set GEMINI_API_KEY in .env or configure via POST /ai-providers/",
+                source.id,
             )
-            raw_items = raw_items[: settings.AI_MAX_ITEMS_PER_RUN]
+            return 0
+
+        _, max_items = _limits_for_provider(provider_type)
+        if len(raw_items) > max_items:
+            logger.debug(
+                "Capping fetch from %d → %d items (%s) — source_id=%s",
+                len(raw_items), max_items, provider_type, source.id,
+            )
+            raw_items = raw_items[:max_items]
 
         # Compute hashes once — reused for store_batch and all downstream filtering.
         all_pairs: list[tuple[str, dict]] = [
@@ -166,15 +196,6 @@ class IngestionService:
                 "[RAW_SAVE] %d stored (%d to process) — source_id=%s",
                 len(hash_to_raw_id), len(unprocessed_hashes), source.id,
             )
-
-        ai_provider = await self._load_ai_provider()
-        if ai_provider is None:
-            logger.warning(
-                "No AI provider configured — skipping source_id=%s. "
-                "Set GEMINI_API_KEY in .env or configure via POST /ai-providers/",
-                source.id,
-            )
-            return 0
 
         # Filter to only articles that need processing (new + previously stuck-pending).
         new_pairs = [(ch, raw) for ch, raw in all_pairs if ch in unprocessed_hashes]
@@ -211,7 +232,7 @@ class IngestionService:
             )
             return 0
 
-        rate_limiter, semaphore = _get_global_limiter()
+        rate_limiter, semaphore = _get_limiter_for(provider_type)
 
         logger.info(
             "[AI_EXTRACT] %d articles queued for AI — source_id=%s",
@@ -226,10 +247,26 @@ class IngestionService:
                 result = await self._process_one(raw, source.type, ai_provider)
                 return content_hash, result
 
-        results = await asyncio.gather(
-            *[process_with_semaphore(ch, raw) for ch, raw in items],
-            return_exceptions=True,
-        )
+        # For Ollama: process in batches with a GPU cooldown between each batch.
+        # Prevents continuous load and thermal throttling on single-GPU setups.
+        batch_size = settings.OLLAMA_BATCH_SIZE if provider_type == "ollama" else len(items)
+        cooldown = settings.OLLAMA_BATCH_COOLDOWN_SECONDS if provider_type == "ollama" else 0.0
+
+        results: list = []
+        for batch_start in range(0, len(items), batch_size):
+            batch = items[batch_start: batch_start + batch_size]
+            batch_results = await asyncio.gather(
+                *[process_with_semaphore(ch, raw) for ch, raw in batch],
+                return_exceptions=True,
+            )
+            results.extend(batch_results)
+            remaining = len(items) - (batch_start + len(batch))
+            if cooldown > 0 and remaining > 0:
+                logger.info(
+                    "GPU cooldown: %.0fs pause after articles %d-%d (%d remaining) — source_id=%s",
+                    cooldown, batch_start + 1, batch_start + len(batch), remaining, source.id,
+                )
+                await asyncio.sleep(cooldown)
 
         crime_articles: list[dict] = []
         filtered_hashes: dict[str, list[str]] = defaultdict(list)
@@ -335,17 +372,27 @@ class IngestionService:
         )
         return count
 
-    async def _load_ai_provider(self) -> AIProvider | None:
+    async def _load_ai_provider(self) -> tuple[AIProvider | None, str]:
+        """Return (provider, provider_type) — type is used to select rate limits."""
         if self.ai_provider_repo is not None:
             try:
                 config = await self.ai_provider_repo.get_active()
                 if config is not None:
-                    return create_from_config(config)
+                    return create_from_config(config), config.provider
             except Exception as exc:
                 logger.warning(
                     "Could not load DB AI provider config, falling back to env: %s", exc
                 )
-        return get_env_fallback_provider()
+        # Env fallback — mirror resolution order from ai_processor.py
+        if settings.OLLAMA_MODEL:
+            provider_type = "ollama"
+        elif settings.GEMINI_API_KEY:
+            provider_type = "gemini_multimodal"
+        elif settings.ANTHROPIC_API_KEY:
+            provider_type = "anthropic"
+        else:
+            provider_type = "unknown"
+        return get_env_fallback_provider(), provider_type
 
     async def _fetch_items(self, source: Source) -> list[dict]:
         try:
