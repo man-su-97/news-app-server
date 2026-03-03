@@ -38,28 +38,16 @@ class Source(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Human-readable label, e.g. "Times of India Crime"
     name: Mapped[str] = mapped_column(String, nullable=False)
 
-    # Feed type — determines which fetcher class the ingestion service uses:
-    #   "rss"  → RSSFetcher (XML/Atom feed via feedparser)
-    #   "rest" → RestFetcher (HTTP GET returning JSON)
     type: Mapped[str] = mapped_column(String, nullable=False)
 
-    # The URL to fetch from.
-    # unique=True prevents the same feed being registered twice.
     url: Mapped[str] = mapped_column(String, unique=True, nullable=False)
 
-    # Optional JSON config for extra fetch parameters.
-    # REST sources typically store auth headers here:
-    #   {"headers": {"Authorization": "Bearer TOKEN123"}}
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    # When False, the scheduler skips this source entirely.
-    # Allows temporary suspension without deleting the source record.
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
-    # Set by PostgreSQL on INSERT — not controlled by application code.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

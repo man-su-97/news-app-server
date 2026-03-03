@@ -1,3 +1,31 @@
+"""
+app/models/post_processed_article.py — Post-Processed Article Table
+====================================================================
+Stores AI-enriched and structurally refined articles after the filtering stage.
+This table represents articles that have gone through categorization,
+location tagging, importance scoring, and reference extraction.
+
+Why store post-processed articles separately?
+  - AI enrichment layer: Keeps AI-enhanced data separate from raw and filtered data.
+  - One-to-one mapping: Each FilterArticle can produce at most ONE
+    PostProcessedArticle (unique constraint).
+  - Structured categorization: Links to MasterSubCategory and State
+    using proper foreign keys instead of JSON arrays.
+  - Ranking & prioritization: imp_score enables sorting by importance.
+  - Pre-publication checkpoint: Acts as the final validation stage
+    before creating the FinalArticle.
+
+Pipeline Position:
+  RawIngestion → FilterArticle → PostProcessedArticle → FinalArticle
+
+Key Features:
+  - AI-refined title and description
+  - Extracted reference URLs stored as ARRAY(Text)
+  - Single sub-category assignment
+  - Optional state-level location tagging
+  - Importance score for ranking
+  - One-to-one relation with FinalArticle
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -17,6 +45,14 @@ if TYPE_CHECKING:
 
 
 class PostProcessedArticle(Base):
+    """One row = one AI-enriched article ready for final publishing.
+
+    - filter_article_id links back to the filtered article (1:1).
+    - sub_category_id links to MasterSubCategory.
+    - location_id links to State.
+    - imp_score stores computed importance for ranking.
+    - Exactly one FinalArticle can exist per PostProcessedArticle.
+    """
     __tablename__ = "post_processed_articles"
 
     id: Mapped[int] = mapped_column(primary_key=True)

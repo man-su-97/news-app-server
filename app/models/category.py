@@ -36,19 +36,14 @@ class MasterCategory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Display label shown in the UI, e.g. "Violent Crime"
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
-    # Optional longer description of what this category covers.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # UI sort weight — lower number = shown first in category lists.
     priority_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # When False, this category is hidden from the frontend feed.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    # Set by PostgreSQL on INSERT.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -71,24 +66,18 @@ class MasterSubCategory(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Parent category — RESTRICT prevents deleting a category that still has sub-cats.
     category_id: Mapped[int] = mapped_column(
         ForeignKey("master_category.id", ondelete="RESTRICT"), nullable=False, index=True
     )
 
-    # Display label, e.g. "Murder", "Cybercrime"
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    # Optional longer description.
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # UI sort weight within the parent category.
     priority_point: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
-    # When False, articles with this sub-category are hidden from the feed.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    # Set by PostgreSQL on INSERT.
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

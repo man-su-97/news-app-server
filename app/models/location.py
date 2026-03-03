@@ -33,7 +33,6 @@ class Country(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # ISO country name, e.g. "India", "United States"
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
     # --- Relationships ---
@@ -53,12 +52,10 @@ class State(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    # Parent country — RESTRICT prevents deleting a country that still has states.
     country_id: Mapped[int] = mapped_column(
         ForeignKey("country.id", ondelete="RESTRICT"), nullable=False, index=True
     )
 
-    # State/province name, e.g. "Maharashtra", "Karnataka"
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # --- Relationships ---

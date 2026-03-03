@@ -20,7 +20,7 @@ How it works:
     - Track changes for migration generation
 """
 
-from sqlalchemy.orm import DeclarativeBase  # The SQLAlchemy ORM base class
+from sqlalchemy.orm import DeclarativeBase
 
 
 class Base(DeclarativeBase):
@@ -32,4 +32,4 @@ class Base(DeclarativeBase):
       - Generate SQL queries from Python code (no raw SQL needed)
       - Power Alembic migrations (it reads Base.metadata to see all tables)
     """
-    pass   # No custom behaviour needed — DeclarativeBase provides everything
+    pass

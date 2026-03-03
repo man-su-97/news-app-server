@@ -1,3 +1,32 @@
+"""
+app/models/filter_article.py — Filtered Article Table
+======================================================
+Stores cleaned and validated news articles after the raw ingestion stage.
+This table represents articles that passed initial filtering, deduplication,
+and structural validation before AI enrichment or post-processing.
+
+Why store filtered articles separately from raw ingestion?
+  - Clean layer separation: RawIngestion keeps unprocessed source data,
+    while FilterArticle contains normalized, usable article records.
+  - Deduplication control: main_url is unique to prevent duplicate articles.
+  - One-to-one mapping: Each raw_ingestion_id can be linked to only one
+    filtered article (unique constraint).
+  - Pre-AI checkpoint: Acts as a stable intermediate layer before
+    PostProcessedArticle enrichment.
+  - Faster querying: Indexed title, main_url, published_at, and location
+    allow efficient filtering in dashboards and APIs.
+
+Pipeline Position:
+  RawIngestion → FilterArticle → PostProcessedArticle
+
+Key Features:
+  - Unique article URL (main_url)
+  - Optional link to original raw ingestion row
+  - Category & subcategory mapping stored as JSONB arrays
+  - Optional state-level location tagging
+  - One-to-one relation with PostProcessedArticle
+"""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,6 +45,14 @@ if TYPE_CHECKING:
 
 
 class FilterArticle(Base):
+    """One row = one cleaned and validated article ready for enrichment.
+
+    - raw_ingestion_id links back to the original raw record.
+    - main_url is globally unique to prevent duplication.
+    - category_ids and sub_category_ids are stored as JSONB arrays.
+    - location_state_id links to the State table (optional).
+    - Exactly one PostProcessedArticle can exist per FilterArticle.
+    """
     __tablename__ = "filtered_articles"
 
     id: Mapped[int] = mapped_column(primary_key=True)

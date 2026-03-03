@@ -26,7 +26,6 @@ import logging
 from app.models.ai_provider import AIProviderConfig, PROVIDER_BASE_URLS
 from app.services.normalization.providers.base import AIProvider
 
-# Import all concrete provider implementations
 from app.services.normalization.providers.anthropic_prov import AnthropicProvider
 from app.services.normalization.providers.gemini_langgraph_prov import GeminiLangGraphProvider
 from app.services.normalization.providers.gemini_multimodal_prov import GeminiMultimodalLangGraphProvider
@@ -34,12 +33,6 @@ from app.services.normalization.providers.openai_prov import OpenAICompatiblePro
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache: { (config_id, model, api_key) → AIProvider instance }
-# Persists for the lifetime of the process (until server restart).
-# Architecture decision: caching here (not inside IngestionService) because:
-#   - IngestionService is created fresh per HTTP request
-#   - We don't want to create new SDK connection pools on every request
-#   - Provider instances are stateless (safe to share across requests)
 _provider_cache: dict[tuple, AIProvider] = {}
 
 
@@ -52,7 +45,7 @@ def create_from_config(config: AIProviderConfig) -> AIProvider:
     """
     cache_key = (config.id, config.model, config.api_key)
     if cache_key in _provider_cache:
-        return _provider_cache[cache_key]   # Return cached instance — no new objects created
+        return _provider_cache[cache_key]
 
     # Build a fresh provider instance (creates SDK client with connection pool)
     provider = _build(config)
@@ -131,36 +124,23 @@ def _build(config: AIProviderConfig) -> AIProvider:
     provider = config.provider
     model = config.model
     api_key = config.api_key
-    # Use the stored base_url if the user provided one,
-    # or fall back to the provider default (e.g. Gemini's Google API endpoint)
     base_url = config.base_url or PROVIDER_BASE_URLS.get(provider)
 
     if provider == "anthropic":
-        # Anthropic SDK — uses api_key to call api.anthropic.com
         return AnthropicProvider(api_key=api_key, model=model)
 
     if provider == "gemini_langgraph":
-        # Original LangGraph provider: search_node → process_node (single combined call).
         return GeminiLangGraphProvider(api_key=api_key, model=model)
 
     if provider == "gemini_multimodal":
-        # Enhanced multimodal LangGraph provider — RECOMMENDED.
-        # Two separate graphs: filter (extract→search→classify) and post-process (search→rewrite+rank).
-        # Supports image-in-message for crime scene classification.
         return GeminiMultimodalLangGraphProvider(api_key=api_key, model=model)
 
     if provider == "ollama":
-        # Local Ollama server — OpenAI-compatible endpoint at localhost:11434/v1.
-        # base_url defaults to PROVIDER_BASE_URLS["ollama"] if user didn't override.
-        # api_key is a placeholder ("ollama") since Ollama doesn't require auth.
         return OpenAICompatibleProvider(
             api_key=api_key or "ollama", model=model, base_url=base_url
         )
 
     if provider in ("openai", "gemini", "custom"):
-        # OpenAI-compatible endpoint — works for OpenAI, Gemini (via OpenAI format),
-        # and any self-hosted server (vLLM, LM Studio, remote Ollama).
-        # base_url=None uses the OpenAI SDK's default (api.openai.com).
         return OpenAICompatibleProvider(api_key=api_key, model=model, base_url=base_url)
 
     raise ValueError(
