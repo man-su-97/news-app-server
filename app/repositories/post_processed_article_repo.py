@@ -122,6 +122,18 @@ class PostProcessedArticleRepository:
         result = await self.db.execute(stmt)
         return result.scalar_one()
 
+    async def update_reference_urls(self, article_id: int, urls: list[str]) -> None:
+        """Persist reference_urls on a post_processed_article row."""
+        from sqlalchemy import update
+
+        stmt = (
+            update(PostProcessedArticle)
+            .where(PostProcessedArticle.id == article_id)
+            .values(reference_urls=urls)
+        )
+        await self.db.execute(stmt)
+        await self.db.commit()
+
     async def get_top_by_imp_score(self, limit: int = 20) -> list[PostProcessedArticle]:
         stmt = (
             select(PostProcessedArticle)

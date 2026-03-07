@@ -51,7 +51,8 @@ class RawIngestion(Base):
         ForeignKey("news_sources.id", ondelete="CASCADE"), index=True
     )
 
-    content_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    content_hash: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False)
 
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
@@ -59,11 +60,13 @@ class RawIngestion(Base):
         String(20), nullable=False, default="pending", server_default="pending"
     )
 
-    normalized_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    normalized_by: Mapped[str | None] = mapped_column(
+        String(200), nullable=True)
 
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    retry_count: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -73,10 +76,9 @@ class RawIngestion(Base):
         DateTime(timezone=True), nullable=True
     )
 
-    # --- Relationships ---
-    source: Mapped["Source"] = relationship(  # noqa: F821
+    source: Mapped["Source"] = relationship(
         "Source", back_populates="raw_ingestions"
     )
-    filter_article: Mapped["FilterArticle | None"] = relationship(  # noqa: F821
+    filter_article: Mapped["FilterArticle | None"] = relationship(
         "FilterArticle", back_populates="raw_ingestion", uselist=False
     )

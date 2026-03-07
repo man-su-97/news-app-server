@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -53,3 +54,25 @@ class ArticleListResponse(BaseModel):
 
 
 ArticleResponse = PostProcessedArticleResponse
+
+
+class RawIngestionResponse(BaseModel):
+    id: int
+    source_id: int
+    content_hash: str
+    raw_payload: dict[str, Any]
+    status: str
+    normalized_by: str | None
+    error_message: str | None
+    retry_count: int
+    created_at: datetime
+    processed_at: datetime | None
+
+    model_config = {"from_attributes": True}
+
+
+class RawIngestionListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[RawIngestionResponse]

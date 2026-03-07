@@ -35,7 +35,6 @@ class Country(Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
-    # --- Relationships ---
     states: Mapped[list["State"]] = relationship(
         "State", back_populates="country", passive_deletes=True
     )
@@ -58,8 +57,8 @@ class State(Base):
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
 
-    # --- Relationships ---
-    country: Mapped["Country"] = relationship("Country", back_populates="states")
+    country: Mapped["Country"] = relationship(
+        "Country", back_populates="states")
     post_processed_articles: Mapped[list["PostProcessedArticle"]] = relationship(  # noqa: F821
         "PostProcessedArticle", back_populates="location"
     )

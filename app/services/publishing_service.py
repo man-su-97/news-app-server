@@ -5,6 +5,7 @@ from app.core.config import settings
 from app.models.post_processed_article import PostProcessedArticle
 from app.repositories.final_article_repo import FinalArticleRepository
 from app.repositories.post_processed_article_repo import PostProcessedArticleRepository
+from app.services.google_search_service import enrich_articles_with_reference_urls
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class PublishingService:
             logger.info("PublishingService: no scored articles to publish")
             return 0
 
+        # Build row dicts first so we can enrich reference_urls in-place.
         rows = []
         for article in top_articles:
             rank_score = _compute_rank_score(article)
@@ -63,6 +65,26 @@ class PublishingService:
                 "reference_urls": article.reference_urls,
                 "rank_score": rank_score,
             })
+
+        # Enrich reference_urls via Google Custom Search for articles that lack them.
+        # Requests are sequential with a delay to stay within the free-tier quota.
+        if settings.GOOGLE_SEARCH_API_KEY and settings.GOOGLE_SEARCH_ENGINE_ID:
+            needs_search = [r for r in rows if not r.get("reference_urls")]
+            if needs_search:
+                logger.info(
+                    "PublishingService: fetching reference_urls for %d articles via Google Search",
+                    len(needs_search),
+                )
+                await enrich_articles_with_reference_urls(needs_search)
+
+                # Persist found URLs back to post_processed_articles so the next
+                # publish cycle skips these articles and saves quota.
+                for row in needs_search:
+                    if row.get("reference_urls"):
+                        await self._post_processed_repo.update_reference_urls(
+                            row["post_processed_article_id"],
+                            row["reference_urls"],
+                        )
 
         logger.info(
             "PublishingService: publishing %d articles, top rank_score=%.1f",

@@ -62,6 +62,12 @@ async def get_state_repo(
     return StateRepository(db)
 
 
+async def get_raw_ingestion_repo(
+    db: AsyncSession = Depends(get_db),
+) -> RawIngestionRepository:
+    return RawIngestionRepository(db)
+
+
 async def get_ingestion_service(
     db: AsyncSession = Depends(get_db),
 ) -> IngestionService:

@@ -10,6 +10,7 @@ from app.api.routes_ai_providers import router as ai_provider_router
 from app.api.routes_filter_articles import router as filter_article_router
 from app.api.routes_final_articles import router as final_article_router
 from app.api.routes_ingest import router as ingest_router
+from app.api.routes_raw_ingestion import router as raw_ingestion_router
 from app.api.routes_master_data import router as master_data_router
 from app.api.routes_post_processed import router as post_processed_router
 from app.api.routes_sources import router as source_router
@@ -53,6 +54,7 @@ app.include_router(post_processed_router, prefix="/post-processed", tags=["Pipel
 app.include_router(master_data_router, prefix="/master", tags=["Master Data"])
 app.include_router(source_router, prefix="/sources", tags=["Admin"])
 app.include_router(ingest_router, prefix="/ingest", tags=["Admin"])
+app.include_router(raw_ingestion_router, prefix="/raw-ingestion", tags=["Pipeline"])
 app.include_router(ai_provider_router, prefix="/ai-providers", tags=["Admin"])
 
 

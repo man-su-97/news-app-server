@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     DECAY_WEEK: float = 0.25
     DECAY_OLD: float = 0.10
 
+    # Google Custom Search API (free tier: 100 queries/day)
+    GOOGLE_SEARCH_API_KEY: str | None = None
+    GOOGLE_SEARCH_ENGINE_ID: str | None = None
+    # How many reference URLs to fetch per article (max 10 per Google API call)
+    GOOGLE_SEARCH_RESULTS_PER_ARTICLE: int = 3
+    # Delay between consecutive Google Search requests to protect free-tier quota
+    GOOGLE_SEARCH_DELAY_SECONDS: float = 1.0
+
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8")
 

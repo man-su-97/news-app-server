@@ -69,7 +69,6 @@ class FinalArticle(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    # --- Relationships ---
     post_processed_article: Mapped["PostProcessedArticle | None"] = relationship(
         "PostProcessedArticle", back_populates="final_article"
     )

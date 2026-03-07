@@ -46,13 +46,13 @@ class Source(Base):
 
     config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, default=True, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
 
-    # --- Relationships ---
-    raw_ingestions: Mapped[list["RawIngestion"]] = relationship(  # noqa: F821
+    raw_ingestions: Mapped[list["RawIngestion"]] = relationship(
         "RawIngestion", back_populates="source", passive_deletes=True
     )

@@ -15,7 +15,7 @@ the application code has an error. The application-level logic ensures the right
 user experience (e.g. clear error messages, not raw DB constraint violations).
 """
 
-from sqlalchemy import select, update         # Query builders
+from sqlalchemy import select, update         
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ai_provider import AIProviderConfig, PROVIDER_BASE_URLS
@@ -41,7 +41,6 @@ class AIProviderRepository:
           - For "gemini_langgraph" and "anthropic", the default is None
             because their SDKs don't need a URL override.
         """
-        # Use the user-supplied URL or fall back to the provider default
         base_url = data.base_url or PROVIDER_BASE_URLS.get(data.provider)
 
         config = AIProviderConfig(
@@ -50,11 +49,11 @@ class AIProviderRepository:
             model=data.model,
             api_key=data.api_key,
             base_url=base_url,
-            is_active=False,    # always start inactive — must be activated separately
+            is_active=False,   
         )
         self.db.add(config)
         await self.db.commit()
-        await self.db.refresh(config)  # reload to get auto-generated id and created_at
+        await self.db.refresh(config)  
         return config
 
     async def get_all(self) -> list[AIProviderConfig]:
@@ -103,7 +102,7 @@ class AIProviderRepository:
         # First verify the target exists
         target = await self.get_by_id(config_id)
         if target is None:
-            return None   # Caller will raise 404
+            return None  
 
         # Step 1: Set ALL rows to is_active=False (including the current active one)
         # This clears the old active state before setting the new one.
@@ -118,8 +117,6 @@ class AIProviderRepository:
             .values(is_active=True)
         )
 
-        await self.db.commit()          # Make both changes permanent atomically
-        await self.db.refresh(target)   # Reload target to get updated is_active=True
         return target
 
     async def deactivate_all(self) -> None:
