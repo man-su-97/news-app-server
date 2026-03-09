@@ -134,6 +134,41 @@ class PostProcessedArticleRepository:
         await self.db.execute(stmt)
         await self.db.commit()
 
+    async def get_without_reference_urls(
+        self, limit: int = 50
+    ) -> list[PostProcessedArticle]:
+        """Return articles where reference_urls IS NULL (never searched).
+
+        Articles stored with an empty list [] have already been searched and
+        returned no results — they are excluded here so we never re-query them.
+        Priority is given to higher imp_score so the most important articles
+        are enriched first when the run cap is reached.
+        """
+        stmt = (
+            select(PostProcessedArticle)
+            .where(PostProcessedArticle.reference_urls.is_(None))
+            .order_by(PostProcessedArticle.imp_score.desc().nulls_last())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def mark_reference_urls_searched(self, article_id: int) -> None:
+        """Store an empty list as a sentinel meaning 'searched, no results found'.
+
+        This prevents the article from appearing in future get_without_reference_urls
+        queries, ensuring each article is searched at most once.
+        """
+        from sqlalchemy import update
+
+        stmt = (
+            update(PostProcessedArticle)
+            .where(PostProcessedArticle.id == article_id)
+            .values(reference_urls=[])
+        )
+        await self.db.execute(stmt)
+        await self.db.commit()
+
     async def get_top_by_imp_score(self, limit: int = 20) -> list[PostProcessedArticle]:
         stmt = (
             select(PostProcessedArticle)

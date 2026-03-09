@@ -1,58 +1,108 @@
 # Crime News API — Architecture & Operations Guide
 
-> Complete reference: every file explained, end-to-end logic flow, database schema,
-> AI pipeline, multi-provider switching, Google Search enrichment, and run instructions.
+> **Who this document is for:** Anyone — beginner or experienced — who wants to understand
+> exactly what this app does, why each file exists, how data flows from a news RSS feed to a
+> ranked public API, and how to run, configure, and extend the system.
 
 ---
 
 ## Table of Contents
 
-1. [What This App Does](#1-what-this-app-does)
-2. [How to Run the App](#2-how-to-run-the-app)
-3. [Tech Stack](#3-tech-stack)
-4. [Project Structure](#4-project-structure)
-5. [File-by-File Logic](#5-file-by-file-logic)
-6. [Database Schema](#6-database-schema)
-7. [End-to-End Pipeline Flow](#7-end-to-end-pipeline-flow)
-8. [AI Provider System](#8-ai-provider-system)
-9. [Google Search Reference URL Enrichment](#9-google-search-reference-url-enrichment)
-10. [Request Flows — End to End](#10-request-flows--end-to-end)
-11. [API Reference](#11-api-reference)
-12. [Configuration Reference](#12-configuration-reference)
-13. [Adding a New AI Provider](#13-adding-a-new-ai-provider)
+1. [What This App Does (Plain English)](#1-what-this-app-does-plain-english)
+2. [Quick Glossary — Terms Used Everywhere](#2-quick-glossary--terms-used-everywhere)
+3. [How to Run the App](#3-how-to-run-the-app)
+4. [Tech Stack — What Each Library Does](#4-tech-stack--what-each-library-does)
+5. [Project Structure](#5-project-structure)
+6. [File-by-File Logic — What It Does and WHY It Exists](#6-file-by-file-logic--what-it-does-and-why-it-exists)
+7. [Database Schema — The 9 Tables Explained](#7-database-schema--the-9-tables-explained)
+8. [End-to-End Pipeline Flow — Step by Step](#8-end-to-end-pipeline-flow--step-by-step)
+9. [AI Provider System](#9-ai-provider-system)
+10. [Google Search Reference URL Enrichment — Design Deep Dive](#10-google-search-reference-url-enrichment--design-deep-dive)
+11. [Scheduler Design — Why 3 Steps, Not 3 Jobs](#11-scheduler-design--why-3-steps-not-3-jobs)
+12. [Request Flows — End to End](#12-request-flows--end-to-end)
+13. [API Reference](#13-api-reference)
+14. [Configuration Reference](#14-configuration-reference)
+15. [Adding a New AI Provider](#15-adding-a-new-ai-provider)
 
 ---
 
-## 1. What This App Does
+## 1. What This App Does (Plain English)
 
-An **automated AI-powered crime news aggregator** for India.
+Imagine you want a constantly-updated ranked list of the most important crime news stories
+happening in India right now. This app does that automatically, 24/7, without human involvement.
 
-Every 5 minutes the scheduler:
+### The big picture
 
-1. Fetches articles from all active RSS/REST news sources
-2. Deduplicates by SHA-256 hash — the same article is never processed twice
-3. Pre-filters using a ~50-keyword crime list — skips ~70% of articles before any AI call
-4. Sends remaining articles to the configured AI provider, which in a **single call**:
-   - Decides if the article is crime-related (non-crime → discard)
-   - Extracts: original title, URL, description, image, published date
-   - Rewrites the title and description in its own words (plagiarism-safe)
-   - Assigns an importance score 1–100 based on severity, scope, and public impact
-   - Labels one or more crime sub-categories (murder, fraud, terrorism, …)
-   - Resolves the location to an Indian state
-5. Stores crime articles across two pipeline tables (`filtered_articles` → `post_processed_articles`)
-6. Runs a publishing job every 5 minutes that:
-   - Picks the top 20 articles by importance score
-   - Fetches related news URLs via Google Custom Search API (if configured)
-   - Applies time-decay to compute `rank_score`
-   - Upserts them into `final_articles` — the public ranked feed
+```
+Internet News Sources  →  This App  →  Ranked API Feed  →  Your Frontend / Mobile App
+  (RSS feeds, REST)         (AI)         (final_articles)
+```
 
-**AI providers are fully switchable at runtime** via the `/ai-providers/` API — no restart needed.
-Currently supported: **Ollama (local)**, Gemini Multimodal, Gemini LangGraph, Anthropic Claude,
-OpenAI GPT, any OpenAI-compatible server.
+### What happens every 5 minutes (automatically)
+
+**Step 1 — Fetch:** The app downloads articles from all configured news sources (NDTV, Times of
+India RSS feeds, etc.).
+
+**Step 2 — Deduplicate:** Each article gets a unique fingerprint (SHA-256 hash). If the same
+article was already fetched before, it is silently ignored.
+
+**Step 3 — Pre-filter (keyword check):** Before spending any AI budget, the app checks if the
+article even mentions crime-related words like "murder", "arrested", "fraud", etc. ~70% of
+articles fail this check and are discarded instantly — no AI call needed.
+
+**Step 4 — AI Analysis (the clever part):** The remaining articles are sent to an AI (Ollama
+locally, or Gemini/Claude/GPT in the cloud). In a *single* AI call per article, the AI:
+- Decides: is this actually a crime story? (if not → discard)
+- Rewrites the title and description in its own words (avoids copyright issues)
+- Assigns an importance score 1–100 (a kidnapping of a child scores higher than minor theft)
+- Labels the crime type (murder, fraud, terrorism, cybercrime, etc.)
+- Identifies the Indian state where it happened
+
+**Step 5 — Search Enrichment:** After ingestion, the app runs Google Custom Search to find
+3 related news URLs for each article. This helps the frontend show "Read more" links. Each
+article is searched **exactly once** — no repeat searches waste your 100 free queries/day.
+
+**Step 6 — Ranking & Publishing:** The top-20 articles by importance score are selected. A
+time-decay formula reduces the score of older articles (fresh news scores higher). The result
+is written to the `final_articles` table — the feed your frontend reads.
+
+### What the API exposes
+
+- **`/final-articles/`** — The ranked feed. This is what your app calls.
+- **`/ingest/`** — Manually trigger a pipeline run.
+- **`/ai-providers/`** — Switch AI providers without restarting the server.
+- **`/raw-ingestion/`** — Debug: see every article that was ever fetched.
+- **`/sources/`** — Manage which news sources to follow.
 
 ---
 
-## 2. How to Run the App
+## 2. Quick Glossary — Terms Used Everywhere
+
+| Term | Plain meaning |
+|------|--------------|
+| **Pipeline** | The chain of steps an article goes through: fetch → AI → enrich → publish |
+| **Raw ingestion** | The very first storage of an article, before any processing |
+| **Filtered article** | An article that passed the AI crime check (Stage 1 output) |
+| **Post-processed article** | A filtered article after enrichment with reference URLs (Stage 2 output) |
+| **Final article** | A ranked article in the public feed (terminal stage) |
+| **imp_score** | AI-assigned importance score 1–100 |
+| **rank_score** | `imp_score × time_decay_factor` — what the frontend sorts by |
+| **reference_urls** | Google Search results for an article — "related news" links |
+| **Sentinel value** | A special value `[]` stored in `reference_urls` meaning "searched but nothing found" |
+| **Upsert** | INSERT if new, UPDATE if already exists — prevents duplicate rows |
+| **Content hash** | SHA-256 fingerprint of an article — the deduplication key |
+| **Provider** | An AI service (Ollama, Gemini, Claude, GPT) configured to process articles |
+| **Scheduler** | APScheduler — runs background jobs on a timer without any user request |
+| **Rate limiter** | Code that throttles API calls to stay under per-minute limits |
+| **Repository** | A Python class that handles all database reads/writes for one table |
+| **Schema** | A Pydantic class that defines what data looks like going in/out of the API |
+| **ORM Model** | A Python class that represents a database table (SQLAlchemy) |
+| **Dependency injection** | FastAPI automatically wires database connections into route handlers |
+| **Alembic** | Tool that manages database schema changes (like Git, but for SQL tables) |
+
+---
+
+## 3. How to Run the App
 
 ### Prerequisites
 
@@ -69,37 +119,45 @@ cd news-app-server
 uv sync          # creates .venv/ and installs all dependencies from uv.lock
 ```
 
+> **Why `uv sync`?** `uv` reads `pyproject.toml` and `uv.lock` to install the exact same
+> dependency versions on every machine. No "works on my machine" problems.
+
 ### Step 2 — Configure environment
 
-Minimum required `.env`:
+Create a `.env` file in the project root:
 
 ```env
+# REQUIRED: Your PostgreSQL database connection string.
+# IMPORTANT: Must use postgresql+asyncpg:// (not postgresql://)
+# The +asyncpg part tells SQLAlchemy to use the async PostgreSQL driver.
 DATABASE_URL=postgresql+asyncpg://user:password@host:port/dbname
 
-# Choose ONE AI provider:
+# CHOOSE ONE AI PROVIDER:
 
-# Option A — Local Ollama (no API key needed, runs offline)
+# Option A — Local Ollama (runs on your own GPU, no API key, works offline)
 OLLAMA_MODEL=dengcao/Qwen3-30B-A3B-Instruct-2507:latest
-# OLLAMA_URL=http://localhost:11434/v1   # default
+# OLLAMA_URL=http://localhost:11434/v1   # this is already the default
 
-# Option B — Google Gemini
+# Option B — Google Gemini (cloud, free tier available)
 # GEMINI_API_KEY=AIzaSy...
 
-# Option C — Anthropic Claude
+# Option C — Anthropic Claude (cloud, paid)
 # ANTHROPIC_API_KEY=sk-ant-...
 
-# Optional — Google Search for reference URL enrichment (100 queries/day free)
+# OPTIONAL: Google Search for "related news" links (100 queries/day free tier)
+# Without these, the app still works — articles just won't have reference_urls.
 # GOOGLE_SEARCH_API_KEY=AIzaSy...
 # GOOGLE_SEARCH_ENGINE_ID=abc123...
 ```
 
-> **Important:** `DATABASE_URL` must use the `postgresql+asyncpg://` scheme.
-
-### Step 3 — Run migrations
+### Step 3 — Run database migrations
 
 ```bash
 .venv/bin/alembic upgrade head
 ```
+
+> **What this does:** Creates all 9 database tables if they don't exist yet. Safe to run
+> multiple times — Alembic tracks which migrations have already been applied.
 
 ### Step 4 — Start the server
 
@@ -116,14 +174,15 @@ curl -X POST http://localhost:8000/sources/ \
        "type": "rss", "is_active": true, "config": {}}'
 ```
 
-### Step 6 — Trigger manual ingest and publish
+### Step 6 — Trigger manual ingest (or wait up to 5 minutes)
 
 ```bash
-# Ingest a source immediately
-curl -X POST http://localhost:8000/ingest/ -H "Content-Type: application/json" \
+# Trigger ingest → enrich → publish immediately for source ID 1
+curl -X POST http://localhost:8000/ingest/ \
+  -H "Content-Type: application/json" \
   -d '{"source_id": 1}'
 
-# Force a publish run (also triggers Google Search enrichment)
+# Or force a re-publish of already-ingested articles (no new Google Search calls)
 curl -X POST "http://localhost:8000/final-articles/publish?top_n=20"
 ```
 
@@ -132,184 +191,210 @@ curl -X POST "http://localhost:8000/final-articles/publish?top_n=20"
 ```bash
 curl http://localhost:8000/final-articles/
 
-# Monitor raw ingestion inbox
+# Debug: see raw pipeline inbox
 curl "http://localhost:8000/raw-ingestion/?status=filtered_out&limit=50"
 ```
 
 ### Interactive docs
 
 ```
-http://localhost:8000/docs    ← Swagger UI
-http://localhost:8000/redoc   ← ReDoc
+http://localhost:8000/docs    ← Swagger UI (try every endpoint in browser)
+http://localhost:8000/redoc   ← ReDoc (better for reading)
 http://localhost:8000/health  ← {"status": "ok"}
 ```
 
 ---
 
-## 3. Tech Stack
+## 4. Tech Stack — What Each Library Does
 
-| Layer | Technology | Role |
-|-------|-----------|------|
-| Web framework | **FastAPI** | Async HTTP, automatic OpenAPI/Swagger, Pydantic DI |
-| ORM | **SQLAlchemy 2.0 async** | Typed `Mapped[]` columns, JSONB support, Alembic integration |
-| DB driver | **asyncpg** | Async PostgreSQL driver |
-| Database | **PostgreSQL** | Primary data store |
-| Migrations | **Alembic** | Versioned, async-aware schema migrations |
-| Scheduler | **APScheduler** | `AsyncIOScheduler` — ingestion + publishing jobs |
-| Validation | **Pydantic v2** | Request/response models, settings, AI output schemas |
-| Settings | **pydantic-settings** | `.env` loading with type validation |
-| RSS parsing | **feedparser** | Handles RSS/Atom, malformed XML |
-| HTTP client | **httpx** | Async HTTP for REST source fetching + Google Search |
-| AI — local | **Ollama** | Local LLM server, OpenAI-compatible endpoint |
-| AI — cloud | **Anthropic SDK** | Claude models |
-| AI — cloud | **OpenAI SDK** | GPT models + any OpenAI-compatible server |
-| AI — cloud | **langchain-google-genai** | Gemini models via LangChain |
-| AI — agents | **LangGraph** | Graph-based multi-node AI pipeline for Gemini |
-| ASGI server | **uvicorn** | Runs FastAPI |
+| Layer | Technology | Why this specific tool? |
+|-------|-----------|------------------------|
+| Web framework | **FastAPI** | Async, auto-generates Swagger docs, built-in Pydantic validation |
+| ORM | **SQLAlchemy 2.0 async** | Typed Python classes map to DB tables; handles async sessions |
+| DB driver | **asyncpg** | Async-native PostgreSQL driver — required for non-blocking DB calls |
+| Database | **PostgreSQL** | Supports JSONB, arrays, GIN indexes — needed for our complex article data |
+| Migrations | **Alembic** | Versioned, reversible schema changes; auto-detects what changed |
+| Scheduler | **APScheduler** | Runs background jobs (ingestion, publishing) on timers in the same process |
+| Validation | **Pydantic v2** | Validates request/response data and AI JSON output with type safety |
+| Settings | **pydantic-settings** | Loads `.env` file and validates every setting has the right type |
+| RSS parsing | **feedparser** | Handles RSS/Atom, fixes malformed XML — battle-tested for real-world feeds |
+| HTTP client | **httpx** | Async HTTP — used for REST source fetching and Google Search API calls |
+| AI — local | **Ollama** | Run LLMs on your own GPU; exposes OpenAI-compatible API |
+| AI — cloud | **Anthropic SDK** | Official Anthropic Python SDK for Claude models |
+| AI — cloud | **OpenAI SDK** | Works for OpenAI GPT *and* any OpenAI-compatible server (Ollama, vLLM) |
+| AI — cloud | **langchain-google-genai** | Gemini models with structured output (returns Pydantic object, not text) |
+| AI — agents | **LangGraph** | Graph-based pipeline for Gemini: extract → classify nodes |
+| ASGI server | **uvicorn** | Production-grade async Python web server |
 
 ---
 
-## 4. Project Structure
+## 5. Project Structure
 
 ```
 news-app-server/
-├── .env                                       # Runtime config (never commit secrets)
+├── .env                                       # Secret config (never commit!)
 ├── .venv/                                     # Python virtual environment (uv managed)
-├── alembic.ini                                # Alembic config
-├── pyproject.toml                             # Project dependencies
-├── uv.lock                                    # Locked dependency versions
+├── alembic.ini                                # Alembic migration settings
+├── pyproject.toml                             # Project dependencies + metadata
+├── uv.lock                                    # Locked exact dependency versions
 ├── ARCHITECTURE.md                            # This document
 │
 ├── migrations/
 │   ├── env.py                                 # Async-aware Alembic runner
-│   └── versions/                              # 11 migration files
+│   └── versions/                              # One .py file per schema change
 │
 └── app/
-    ├── main.py                                # FastAPI app, routers, lifespan
+    ├── main.py                                # App entry point: wires everything together
     │
-    ├── core/
-    │   ├── config.py                          # All settings from .env
-    │   ├── database.py                        # AsyncEngine + session factory
-    │   ├── deps.py                            # Dependency injection (repos + services)
-    │   └── enums.py                           # SubCategoryEnum, CategoryEnum, lookup dicts
+    ├── core/                                  # Shared infrastructure (not business logic)
+    │   ├── config.py                          # All settings from .env — single source of truth
+    │   ├── database.py                        # DB engine and session factory
+    │   ├── deps.py                            # Dependency injection wiring for FastAPI
+    │   └── enums.py                           # Crime category name→ID lookup tables
     │
-    ├── models/                                # SQLAlchemy ORM table definitions
-    │   ├── base.py
-    │   ├── source.py                          # news_sources
-    │   ├── raw_event.py                       # raw_ingestion (inbox + dedup)
-    │   ├── filter_article.py                  # filtered_articles (AI stage 1)
-    │   ├── post_processed_article.py          # post_processed_articles (AI stage 2)
-    │   ├── final_article.py                   # final_articles (public feed)
-    │   ├── ai_provider.py                     # ai_provider_configs + constants
-    │   ├── category.py                        # master_category + master_sub_category
-    │   └── location.py                        # country + state
+    ├── models/                                # SQLAlchemy ORM (Python class = DB table)
+    │   ├── base.py                            # Shared DeclarativeBase all models inherit from
+    │   ├── source.py                          # news_sources table
+    │   ├── raw_event.py                       # raw_ingestion table (pipeline inbox)
+    │   ├── filter_article.py                  # filtered_articles (AI Stage 1 output)
+    │   ├── post_processed_article.py          # post_processed_articles (enriched, with reference_urls)
+    │   ├── final_article.py                   # final_articles (public ranked feed)
+    │   ├── ai_provider.py                     # ai_provider_configs + provider metadata constants
+    │   ├── category.py                        # master_category + master_sub_category (reference data)
+    │   └── location.py                        # country + state (36 Indian states/UTs)
     │
-    ├── repositories/                          # Data access layer
+    ├── repositories/                          # Data access layer — all DB reads/writes live here
     │   ├── source_repo.py
     │   ├── raw_ingestion_repo.py              # store_batch, mark_*, get_all, count
-    │   ├── filter_article_repo.py
-    │   ├── post_processed_article_repo.py     # insert_batch, update_reference_urls
-    │   ├── final_article_repo.py              # upsert_batch, get_feed
-    │   ├── ai_provider_repo.py
-    │   ├── master_data_repo.py
-    │   └── article_repo.py                    # Alias for PostProcessedArticleRepository
+    │   ├── filter_article_repo.py             # insert_batch (upsert on main_url)
+    │   ├── post_processed_article_repo.py     # insert_batch, update_reference_urls,
+    │   │                                      # get_without_reference_urls, mark_reference_urls_searched
+    │   ├── final_article_repo.py              # upsert_batch, get_feed (ranked)
+    │   ├── ai_provider_repo.py                # get_active, activate, deactivate_all
+    │   ├── master_data_repo.py                # read-only: categories, sub-categories, states
+    │   └── article_repo.py                    # Alias → PostProcessedArticleRepository
     │
-    ├── schemas/                               # Pydantic request/response models
+    ├── schemas/                               # Pydantic: defines API request/response shapes
     │   ├── source_schema.py
-    │   ├── article_schema.py                  # FilterArticle, PostProcessed,
-    │   │                                      # RawIngestion response schemas
-    │   ├── final_article_schema.py
-    │   ├── ai_provider_schema.py
+    │   ├── article_schema.py                  # FilterArticle, PostProcessed, RawIngestion responses
+    │   ├── final_article_schema.py            # Public feed response (includes reference_urls)
+    │   ├── ai_provider_schema.py              # AI provider CRUD (validates provider type)
     │   └── master_data_schema.py
     │
-    ├── api/                                   # HTTP route handlers
+    ├── api/                                   # HTTP route handlers — one file per resource
     │   ├── routes_sources.py                  # /sources/
     │   ├── routes_ingest.py                   # /ingest/
     │   ├── routes_filter_articles.py          # /filter-articles/
     │   ├── routes_post_processed.py           # /post-processed/
     │   ├── routes_final_articles.py           # /final-articles/ + /publish
-    │   ├── routes_raw_ingestion.py            # /raw-ingestion/  ← NEW
+    │   ├── routes_raw_ingestion.py            # /raw-ingestion/ (debug monitoring)
     │   ├── routes_ai_providers.py             # /ai-providers/
     │   └── routes_master_data.py              # /master/
     │
-    └── services/                              # Business logic
-        ├── ingestion_service.py               # Full pipeline orchestrator
-        ├── publishing_service.py              # Ranking + Google Search + feed refresh
-        ├── google_search_service.py           # Google Custom Search API client ← NEW
-        ├── scheduler.py                       # APScheduler jobs
-        ├── source_normalizer.py               # to_plain_dict(), parse_date()
+    └── services/                              # Business logic — the "how it works"
+        ├── ingestion_service.py               # Full pipeline: fetch → AI → DB write
+        ├── publishing_service.py              # Ranking + feed upsert (reads pre-enriched data)
+        ├── search_enrichment_service.py       # Google Search — once per article, quota-safe
+        ├── google_search_service.py           # Low-level Google Custom Search API client
+        ├── scheduler.py                       # APScheduler: registers jobs, chains the 3 steps
+        ├── source_normalizer.py               # Converts raw feedparser objects to plain dicts
         ├── fetchers/
-        │   ├── rss_fetcher.py
-        │   └── rest_fetcher.py
+        │   ├── rss_fetcher.py                 # RSS/Atom feed downloader (feedparser in thread)
+        │   └── rest_fetcher.py                # REST API fetcher (httpx async)
         └── normalization/
-            ├── ai_processor.py                # get_env_fallback_provider()
-            ├── provider_factory.py            # Factory + process-lifetime cache
-            ├── resolvers.py                   # CategoryResolver, LocationResolver
-            ├── canonical_validator.py         # URL and field sanitation
+            ├── ai_processor.py                # Picks AI provider from env vars as fallback
+            ├── provider_factory.py            # Creates + caches provider SDK clients
+            ├── resolvers.py                   # Converts AI text labels → database FK IDs
+            ├── canonical_validator.py         # Cleans/validates URLs before DB write
             └── providers/
-                ├── base.py                    # AIProvider ABC, prompt, JSON parser
-                ├── openai_prov.py             # OpenAICompatibleProvider
-                ├── anthropic_prov.py          # AnthropicProvider
-                ├── gemini_langgraph_prov.py   # GeminiLangGraphProvider
-                └── gemini_multimodal_prov.py  # GeminiMultimodalLangGraphProvider
+                ├── base.py                    # Shared: prompt, JSON parser, output schema
+                ├── openai_prov.py             # OpenAI, Ollama, vLLM, custom servers
+                ├── anthropic_prov.py          # Anthropic Claude
+                ├── gemini_langgraph_prov.py   # Gemini (text response, parsed manually)
+                └── gemini_multimodal_prov.py  # Gemini (structured output via LangGraph)
 ```
 
 ---
 
-## 5. File-by-File Logic
+## 6. File-by-File Logic — What It Does and WHY It Exists
+
+> For every file: **What** it does + **Why** it was written this way.
+
+---
 
 ### `app/main.py`
-**Role:** FastAPI application factory and startup coordinator.
+**What:** FastAPI application factory and startup coordinator.
+**Why:** Every FastAPI app needs one central file that creates the `app` instance, registers all
+the URL routes, and handles startup/shutdown. Keeping this thin (no business logic) makes it
+easy to see the full picture at a glance.
 
-- Creates the `FastAPI()` app instance with title, version, and description.
+- Creates `FastAPI()` with title, version, description.
 - Registers all 8 routers with their URL prefixes and Swagger tags.
-- Adds `CORSMiddleware` with `allow_origins=["*"]` for frontend access.
+- Adds `CORSMiddleware` with `allow_origins=["*"]` — lets any frontend domain call the API.
 - Uses `@asynccontextmanager lifespan` to call `start_scheduler()` on startup and
-  `stop_scheduler()` on shutdown — so jobs run only while the server is alive.
-- Exposes `/health` (not in schema) and `/` redirect to `/docs`.
+  `stop_scheduler()` on shutdown. This ensures scheduler jobs run only while the server is alive.
+- Exposes `/health` endpoint and `/` redirect to `/docs`.
 
 ---
 
 ### `app/core/config.py`
-**Role:** Single source of truth for all runtime configuration.
+**What:** Single source of truth for all runtime configuration.
+**Why:** If settings were scattered across multiple files, changing a value (like a URL or
+timeout) would require hunting through the codebase. Centralising everything in one `Settings`
+class means: one place to look, and Pydantic validates types on startup (bad config = server
+won't start, not a subtle runtime bug).
 
-- Uses `pydantic-settings BaseSettings` which auto-reads from `.env` file and environment variables.
-- Every setting has a Python type annotation — invalid values raise a `ValidationError` on startup.
-- Groups settings logically: database, AI provider keys, scheduler intervals, rate limits, time-decay
-  factors, and Google Search credentials.
-- `settings` is a **module-level singleton** — imported everywhere as `from app.core.config import settings`.
-- Key groups:
-  - Ollama: `OLLAMA_REQUESTS_PER_MINUTE=60`, `OLLAMA_CONCURRENCY=1`, `OLLAMA_BATCH_SIZE=10`
-  - Cloud APIs: `CLOUD_REQUESTS_PER_MINUTE=3`, `CLOUD_MAX_ITEMS_PER_RUN=5`
-  - Google Search: `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID`, `GOOGLE_SEARCH_RESULTS_PER_ARTICLE=3`
-  - Time decay: `DECAY_FRESH=1.00` through `DECAY_OLD=0.10`
+- Uses `pydantic-settings BaseSettings` — reads from `.env` file AND environment variables.
+- Every setting has a Python type annotation — invalid values raise a `ValidationError` at startup.
+- `settings` is a **module-level singleton** — imported everywhere as
+  `from app.core.config import settings`.
+- Grouped settings:
+  - **Database:** `DATABASE_URL` (required)
+  - **Ollama (local GPU):** `OLLAMA_REQUESTS_PER_MINUTE=60`, `OLLAMA_CONCURRENCY=1`,
+    `OLLAMA_BATCH_SIZE=10`, `OLLAMA_BATCH_COOLDOWN_SECONDS=15`
+  - **Cloud APIs (conservative limits):** `CLOUD_REQUESTS_PER_MINUTE=3`, `CLOUD_MAX_ITEMS_PER_RUN=5`
+  - **Google Search:** `GOOGLE_SEARCH_API_KEY`, `GOOGLE_SEARCH_ENGINE_ID`,
+    `GOOGLE_SEARCH_RESULTS_PER_ARTICLE=3`, `GOOGLE_SEARCH_DELAY_SECONDS=1.0`,
+    `GOOGLE_SEARCH_MAX_PER_RUN=10`
+  - **Time-decay scoring:** `DECAY_FRESH=1.00`, `DECAY_RECENT=0.75`, `DECAY_DAY=0.50`,
+    `DECAY_WEEK=0.25`, `DECAY_OLD=0.10`
+  - **Scheduler:** `INGEST_INTERVAL_MINUTES=5`, `PUBLISH_INTERVAL_MINUTES=5`,
+    `PUBLISH_OFFSET_SECONDS=30`
 
 ---
 
 ### `app/core/database.py`
-**Role:** Async database engine and session management.
+**What:** Async database engine and session management.
+**Why:** Creating a new database connection for every query is expensive. This file creates a
+single `AsyncEngine` (connection pool) shared across the app, and an `async_sessionmaker` that
+produces one `AsyncSession` per request. The session is your "unit of work" — all reads and
+writes in a request happen through it, and it's closed automatically after the response.
 
-- Creates a single `AsyncEngine` using `create_async_engine(DATABASE_URL, ...)`.
-- Creates an `async_sessionmaker` that produces `AsyncSession` objects.
-- Provides `get_db()` as a FastAPI dependency — yields one `AsyncSession` per request,
-  auto-closing it after the response. Each request gets its own isolated transaction scope.
+- Creates one `AsyncEngine` using `create_async_engine(DATABASE_URL, ...)`.
+- `AsyncSessionLocal` session factory used by both HTTP routes and the scheduler.
+- `get_db()` FastAPI dependency — yields one `AsyncSession` per request, auto-closes it.
 
 ---
 
 ### `app/core/deps.py`
-**Role:** FastAPI dependency injection wiring.
+**What:** FastAPI dependency injection wiring.
+**Why:** Route handlers need repositories (to read/write DB). Instead of each handler creating
+its own DB session and repo instances (duplicated boilerplate), FastAPI's `Depends` system
+builds them automatically and passes them in. This file is the "wiring diagram" — pure glue,
+zero business logic.
 
 - Each `get_*_repo()` function is a FastAPI `Depends` — called per request to build a repo
   instance from the current `AsyncSession`.
-- `get_ingestion_service()` wires together all 5 repositories + the raw DB session that
-  `IngestionService` needs for loading resolvers.
-- `get_raw_ingestion_repo()` — added to expose the raw ingestion data via the new route.
-- Nothing in this file contains business logic; it only instantiates and wires objects.
+- `get_ingestion_service()` wires together all 5 repositories + raw DB session.
+- Nothing here contains business logic; it only instantiates and wires objects.
 
 ---
 
 ### `app/core/enums.py`
-**Role:** Static lookup tables for crime categories.
+**What:** Static lookup tables for crime categories.
+**Why:** The AI outputs category names as text strings like `"murder"`. We need to convert these
+to integer database IDs. Doing a DB query for every article would be slow and wasteful since the
+category list never changes. Enums stored in memory are instant lookups.
 
 - `SubCategoryEnum` maps string labels (e.g. `"murder"`) to integer DB IDs.
 - `CategoryEnum` maps parent category names to integer IDs.
@@ -319,514 +404,570 @@ news-app-server/
 ---
 
 ### `app/models/base.py`
-**Role:** SQLAlchemy `DeclarativeBase` shared by all ORM models.
-
-All 9 ORM models import from here. Ensures all tables are registered with the same metadata
-object, which Alembic uses for `autogenerate`.
+**What:** SQLAlchemy `DeclarativeBase` shared by all ORM models.
+**Why:** All 9 ORM models must share the same `metadata` object for Alembic `autogenerate` to
+see them all when creating migrations. One shared `Base` class guarantees this.
 
 ---
 
 ### `app/models/source.py`
-**Role:** ORM for `news_sources` table.
+**What:** ORM for `news_sources` table — defines where to fetch news from.
 
 - Columns: `id`, `name`, `type` (rss/rest), `url` (unique), `config` (JSONB), `is_active`, `created_at`.
-- Relationship: `raw_ingestions` — one source has many raw rows.
-- `config` JSONB allows per-source custom headers, auth tokens, or other fetch params.
+- `config` JSONB allows per-source custom headers, auth tokens, or pagination parameters.
+- `is_active` flag lets you pause a source without deleting it.
 
 ---
 
 ### `app/models/raw_event.py`
-**Role:** ORM for `raw_ingestion` table — the pipeline inbox.
+**What:** ORM for `raw_ingestion` table — the pipeline inbox.
+**Why:** Storing every article before processing gives you a complete audit trail. You can
+always answer "did we fetch this article?" and "why was it rejected?". Also critical for
+deduplication: the `content_hash` unique constraint at the DB level prevents double-processing
+even if the scheduler fires twice or the app crashes mid-run.
 
 - Every article ever fetched lands here first, before any AI processing.
-- `content_hash` (SHA-256 of `source_id + json(payload)`) is the **global dedup key** — unique constraint prevents double-processing.
+- `content_hash` (SHA-256 of `source_id + json(payload)`) = **global dedup key**.
 - `status` lifecycle: `pending` → `filtered` | `filtered_out` | `failed`.
 - `normalized_by` records which AI model processed the article (audit trail).
-- Relationships: `source` (FK), `filter_article` (one-to-one, optional).
+- `raw_payload` (JSONB) stores the original feed data exactly as received.
 
 ---
 
 ### `app/models/filter_article.py`
-**Role:** ORM for `filtered_articles` — AI Stage 1 output.
+**What:** ORM for `filtered_articles` — AI Stage 1 output.
+**Why:** Separating AI-confirmed crime articles into their own table makes it easy to query
+"all articles the AI accepted" without touching the raw inbox. The `main_url` upsert key also
+handles the case where two different sources report the same story — only one row is stored.
 
-- Stores the AI-extracted and rewritten article after it passes the crime check.
-- `main_url` is the upsert key — same URL from two sources writes only one row.
-- Holds both original (`title`, `description`) and AI-rewritten (`rewritten_title`, `rewritten_description`) versions.
-- `sub_category_ids` and `category_ids` are JSONB integer arrays (GIN indexed for fast filtering).
-- `location_state_id` FK → `state` table; `location` is the raw AI string for debugging.
+- `main_url` = upsert key — same URL from two sources → only one row.
+- Stores both original (`title`, `description`) and AI-rewritten versions.
+- `sub_category_ids` and `category_ids` = JSONB integer arrays (GIN indexed for fast filtering).
+- `location_state_id` FK → `state` table.
 
 ---
 
 ### `app/models/post_processed_article.py`
-**Role:** ORM for `post_processed_articles` — AI Stage 2 / enrichment store.
+**What:** ORM for `post_processed_articles` — the enrichment staging table.
+**Why:** This table is the "staging area" between AI classification and the public feed. It holds
+all the data from `filtered_articles` plus the `reference_urls` field that gets populated by
+Google Search. Keeping this separate from `final_articles` means the search enrichment step can
+update `reference_urls` without touching the ranked public feed.
 
-- Mirror of `filtered_articles` structure, plus `reference_urls` (PostgreSQL `ARRAY(Text)`).
-- `filter_article_id` links back (unique FK) so each filtered article maps to exactly one post-processed row.
-- `reference_urls` is populated by Google Custom Search during the publish cycle.
-- This is the source table for the publishing service — it queries `imp_score` to select top articles.
+- Mirror of `filtered_articles` + `reference_urls` (PostgreSQL `ARRAY(Text)`).
+- `filter_article_id` (unique FK) — one-to-one link back to the filtered article.
+- `reference_urls` states:
+  - `NULL` — never searched (eligible for enrichment)
+  - `[]` — searched, no results (sentinel — never searched again)
+  - `[url1, url2, ...]` — enriched successfully (never searched again)
 
 ---
 
 ### `app/models/final_article.py`
-**Role:** ORM for `final_articles` — the public ranked feed.
+**What:** ORM for `final_articles` — the public ranked feed.
+**Why:** The frontend only needs the top-N ranked articles. Keeping them in a small separate
+table (instead of filtering all `post_processed_articles` every API call) makes reads fast and
+simple. The upsert design means re-ranking the same article updates its score without creating
+duplicate rows.
 
 - Terminal stage of the pipeline — the only table the frontend reads.
-- `post_processed_article_id` (unique FK) is the upsert key; the same article can be re-ranked across cycles.
+- `post_processed_article_id` (unique FK) = upsert key.
 - `rank_score = imp_score × time_decay_factor` — recomputed every publish cycle.
-- `reference_urls` (ARRAY) carries Google Search links for the frontend to display.
-- Kept intentionally small — only the current top-N articles live here.
+- `reference_urls` (ARRAY) carries Google Search links for the frontend.
 
 ---
 
 ### `app/models/ai_provider.py`
-**Role:** ORM for `ai_provider_configs` + provider metadata constants.
+**What:** ORM for `ai_provider_configs` + provider metadata constants.
+**Why:** Storing AI provider config in the DB (rather than only env vars) means you can switch
+from Ollama to Gemini *at runtime* via an API call — no server restart. The DB partial unique
+index `WHERE is_active = true` enforces that at most one provider is active at any time.
 
-- `SUPPORTED_PROVIDERS` frozenset — validated on POST /ai-providers/.
-- `PROVIDER_BASE_URLS` dict — auto-fills `base_url` for `ollama` (`http://localhost:11434/v1`) and `gemini`.
-- `PROVIDER_DEFAULT_MODELS` dict — suggested model per provider (shown in Swagger examples).
-- DB partial unique index: `WHERE is_active = true` — enforces at most one active provider.
-
----
-
-### `app/models/category.py`
-**Role:** ORM for `master_category` and `master_sub_category` tables.
-
-- Read-only reference data seeded by migrations.
-- 8 top-level categories (e.g. Violent Crime, Economic Crime).
-- 10 sub-categories each linked to a parent category.
-- Used by `CategoryResolver` for string-to-ID mapping.
+- `SUPPORTED_PROVIDERS` frozenset — validated on POST `/ai-providers/`.
+- `PROVIDER_BASE_URLS` — auto-fills `base_url` for `ollama` and `gemini`.
+- `PROVIDER_DEFAULT_MODELS` — suggested model names shown in Swagger.
+- Partial unique index: `WHERE is_active = true` enforces single active provider.
 
 ---
 
-### `app/models/location.py`
-**Role:** ORM for `country` and `state` tables.
+### `app/models/category.py` and `app/models/location.py`
+**What:** Read-only reference data (categories, sub-categories, Indian states).
+**Why:** The AI needs to assign a category label and a location. These tables are the
+"vocabulary" the AI is constrained to. Seeded once by migrations — never written to at runtime.
 
-- `state` has 36 rows (Indian states + UTs), seeded by migration.
-- Each `state` has `name` and `country_id` (FK → `country`).
-- `LocationResolver` loads this table once at resolver init time.
+- 8 crime categories (Violent Crime, Economic Crime, etc.) × 10 sub-categories.
+- 36 Indian states + Union Territories.
 
 ---
 
 ### `app/repositories/raw_ingestion_repo.py`
-**Role:** All DB operations for the `raw_ingestion` table.
+**What:** All DB operations for the `raw_ingestion` table.
+**Why:** Repositories isolate database code from business logic. If you switch from PostgreSQL
+to another DB, you only change this file — the service layer stays the same.
 
-Key methods:
-- `compute_content_hash(source_id, raw_payload)` — SHA-256, called once per article in `IngestionService`.
-- `store_batch(source_id, hash_raw_pairs)` — bulk INSERT with `ON CONFLICT DO NOTHING` on `content_hash`.
-  Returns: `hash_to_raw_id` (all hashes → DB ids) and `unprocessed_hashes` (new + previously stuck-pending).
-  The "stuck pending" recovery ensures articles that were stored but never finished processing in a crashed
-  run get retried on the next cycle.
-- `mark_filtered / mark_filtered_out / mark_failed` — bulk UPDATE with `processed_at` timestamp.
-- `get_all(limit, offset, status, source_id)` — paginated query for the frontend monitoring endpoint.
+Key methods and why each exists:
+- `compute_content_hash(source_id, raw_payload)` — SHA-256 fingerprint. **Why:** Consistent
+  dedup key computed identically on every call.
+- `store_batch(source_id, hash_raw_pairs)` — bulk INSERT with `ON CONFLICT DO NOTHING`.
+  **Why:** One SQL statement for many articles is far faster than individual INSERTs.
+  Returns `unprocessed_hashes` including "stuck pending" rows from crashed past runs, so
+  they get retried.
+- `mark_filtered / mark_filtered_out / mark_failed` — bulk UPDATE. **Why:** Audit trail;
+  lets you query "what did the pipeline do with this article?"
+- `get_all(limit, offset, status, source_id)` — paginated query for the monitoring endpoint.
 - `count(status, source_id)` — total count for pagination metadata.
-- `get_by_id(row_id)` — single row with full `raw_payload` JSON.
+- `get_by_id(row_id)` — single row with full `raw_payload` JSON for debugging.
 
 ---
 
 ### `app/repositories/filter_article_repo.py`
-**Role:** DB operations for `filtered_articles`.
+**What:** DB operations for `filtered_articles`.
 
-- `insert_batch(articles, hash_to_raw_id)` — upserts on `main_url` (canonical URL dedup across sources).
+- `insert_batch(articles, hash_to_raw_id)` — upserts on `main_url`.
+  **Why:** The same news story from two different RSS feeds should create only one row.
   Returns `url_to_filter_id` dict so `post_processed_repo` can set the FK.
 
 ---
 
 ### `app/repositories/post_processed_article_repo.py`
-**Role:** DB operations for `post_processed_articles`.
+**What:** DB operations for `post_processed_articles`.
+**Why this file has extra methods:** This table is the hub of the enrichment system. It needs
+specialized methods to safely manage the `reference_urls` field without re-processing articles.
 
+Key methods:
 - `insert_batch(articles, url_to_filter_id)` — upserts on `filter_article_id`.
-- `get_top_by_imp_score(limit)` — ordered by `imp_score DESC WHERE imp_score IS NOT NULL`.
-  Used by `PublishingService` to select candidates for the feed.
-- `update_reference_urls(article_id, urls)` — called by `PublishingService` after Google Search
-  to persist found URLs back, preventing re-fetching on the next publish cycle.
+- `get_top_by_imp_score(limit)` — `ORDER BY imp_score DESC WHERE imp_score IS NOT NULL`.
+  **Why:** `PublishingService` needs the highest-scored articles to publish.
+- `update_reference_urls(article_id, urls)` — sets `reference_urls = [url1, url2, ...]`.
+  **Why:** Called by `SearchEnrichmentService` after a successful Google Search response.
+- `get_without_reference_urls(limit)` — `WHERE reference_urls IS NULL ORDER BY imp_score DESC`.
+  **Why:** The enrichment query. Returns articles that have **never** been searched.
+  Articles with `[]` (the sentinel) are *excluded* — they have been searched before.
+  The `ORDER BY imp_score DESC` ensures the most important articles are enriched first
+  when the per-run cap is hit.
+- `mark_reference_urls_searched(article_id)` — sets `reference_urls = []` (empty list).
+  **Why:** Writes the "searched, no results" sentinel. Prevents this article from ever
+  appearing in `get_without_reference_urls` again — no wasted API calls on future cycles.
 
 ---
 
 ### `app/repositories/final_article_repo.py`
-**Role:** DB operations for `final_articles`.
+**What:** DB operations for `final_articles`.
 
-- `upsert_batch(rows)` — `ON CONFLICT (post_processed_article_id) DO UPDATE SET rank_score, reference_urls, ...`.
-  Re-ranks the same article without creating duplicate rows.
-- `get_feed(limit, offset, sub_category_id, q)` — JOINs with `post_processed_articles` for sub-category
-  filtering; full-text search on `title ILIKE '%q%'`; ordered by `rank_score DESC`.
-- `count(sub_category_id, q)` — pagination total.
-- `get_by_id(article_id)` — single article fetch.
+- `upsert_batch(rows)` — `ON CONFLICT (post_processed_article_id) DO UPDATE SET rank_score, ...`.
+  **Why:** Same article re-ranked every cycle without creating duplicate rows.
+- `get_feed(limit, offset, sub_category_id, q)` — JOINs `post_processed_articles` for
+  sub-category filtering; full-text search on `title ILIKE '%q%'`; ordered by `rank_score DESC`.
+  **Why:** Single optimised query for the frontend's primary endpoint.
 
 ---
 
 ### `app/repositories/ai_provider_repo.py`
-**Role:** CRUD for `ai_provider_configs`.
+**What:** CRUD for `ai_provider_configs`.
 
-- `get_active()` — `SELECT WHERE is_active = true LIMIT 1`. Returns `None` if none configured.
-- `activate(provider_id)` — two-step: set all rows `is_active=false`, then set the target row `true`.
-- `deactivate_all()` — sets `is_active=false` on all rows (fall back to env vars).
+- `get_active()` — `SELECT WHERE is_active = true LIMIT 1`.
+  **Why:** Called at the start of every ingest run to load the current AI config.
+- `activate(provider_id)` — two SQL statements: set all rows `is_active=false`, then set
+  target `true`. **Why:** Atomic switch — never two active providers simultaneously.
+- `deactivate_all()` — falls back to env-var provider resolution.
 
 ---
 
 ### `app/repositories/master_data_repo.py`
-**Role:** Read-only queries for categories, sub-categories, states.
-
-- Used only by the `/master/` endpoints to list reference data for the frontend.
-- `MasterCategoryRepository`, `MasterSubCategoryRepository`, `StateRepository` — each wraps a simple `SELECT *`.
-
----
-
-### `app/schemas/article_schema.py`
-**Role:** Pydantic response models for pipeline inspection endpoints.
-
-- `FilterArticleResponse` — fields for `/filter-articles/` endpoint.
-- `PostProcessedArticleResponse` / `ArticleListResponse` — fields for `/post-processed/` endpoint.
-- `RawIngestionResponse` — includes `raw_payload: dict[str, Any]` for the raw inbox endpoint.
-- `RawIngestionListResponse` — wraps list + pagination metadata.
-- All use `model_config = {"from_attributes": True}` to work with SQLAlchemy ORM objects directly.
+**What:** Read-only queries for categories, sub-categories, states.
+**Why:** Simple `SELECT *` wrappers used only by the `/master/` endpoints for the frontend
+to know which filter options to display.
 
 ---
 
-### `app/schemas/final_article_schema.py`
-**Role:** Pydantic response models for the public feed.
+### `app/schemas/` (all schema files)
+**What:** Pydantic classes defining what API request and response bodies look like.
+**Why:** Without schemas, any malformed request would cause cryptic internal errors. Pydantic
+validates and coerces data at the boundary — before it touches business logic. Also auto-generates
+the Swagger docs.
 
-- `FinalArticleResponse` includes `reference_urls: list[str] | None` for Google Search links.
-- `FinalArticleListResponse` wraps list + `total`, `limit`, `offset` for pagination.
-
----
-
-### `app/schemas/ai_provider_schema.py`
-**Role:** Pydantic models for the AI provider CRUD API.
-
-- `AIProviderCreate` — validates `provider` is a known `Literal` type.
-- Auto-fills `base_url` for `ollama` provider if not supplied.
-- `AIProviderResponse` — returns config without exposing the full API key in listing.
+- `article_schema.py` — `FilterArticleResponse`, `PostProcessedArticleResponse`,
+  `RawIngestionResponse` (includes `raw_payload: dict[str, Any]` for debugging).
+- `final_article_schema.py` — `FinalArticleResponse` includes `reference_urls: list[str] | None`.
+- `ai_provider_schema.py` — `AIProviderCreate` validates `provider` is a known type.
+- All use `model_config = {"from_attributes": True}` — allows building from SQLAlchemy ORM objects.
 
 ---
 
-### `app/api/routes_sources.py`
-**Role:** CRUD for news sources (`/sources/`).
+### `app/api/routes_*.py` (all route files)
+**What:** HTTP endpoint handlers for each resource.
+**Why one file per resource?** Keeps each file small and focused. Routes for `/sources/` have
+nothing to do with routes for `/final-articles/` — separating them means you can find and
+change one without touching the other.
 
-- GET list (with `?include_inactive=true`), POST create, GET by ID, PATCH update, DELETE.
-- Source pause/resume via `PATCH {"is_active": false}`.
-
----
-
-### `app/api/routes_ingest.py`
-**Role:** Manual pipeline trigger (`POST /ingest/`).
-
-- Takes `{"source_id": N}`, validates source exists and has a supported type.
-- Calls `IngestionService.ingest(source)` immediately (same as the scheduler does automatically).
-- Returns `{"source_id", "source_type", "ingested"}` — `ingested` is the count of new post-processed rows written.
-
----
-
-### `app/api/routes_raw_ingestion.py`  *(NEW)*
-**Role:** Read-only monitoring endpoint for the pipeline inbox (`/raw-ingestion/`).
-
-- `GET /raw-ingestion/` — paginated list of raw rows, filterable by `?status=` and `?source_id=`.
-  Validates `status` against the 5 known values; returns 400 on invalid input.
-- `GET /raw-ingestion/{id}` — single row including the full `raw_payload` JSONB.
-- Useful for debugging: see exactly what was fetched, what the AI rejected as non-crime,
-  what failed, and what the original JSON looked like.
-
----
-
-### `app/api/routes_filter_articles.py`
-**Role:** Read-only view of Stage 1 AI output (`/filter-articles/`).
-
-- GET list (paginated) and GET by ID.
-- Useful for auditing: confirms which articles survived AI crime classification.
-
----
-
-### `app/api/routes_post_processed.py`
-**Role:** Read-only view of Stage 2 enriched articles (`/post-processed/`).
-
-- GET list with `?from_date=` / `?to_date=` (ISO 8601) filters.
-- Shows `imp_score` and `reference_urls` so you can verify enrichment is working.
-
----
-
-### `app/api/routes_final_articles.py`
-**Role:** Public ranked news feed + manual publish trigger (`/final-articles/`).
-
-- `GET /` — main frontend endpoint; supports `limit`, `offset`, `sub_category_id`, `q` (search).
-- `GET /{id}` — single article by ID.
-- `POST /publish` — **manual publish trigger**: immediately runs `PublishingService.publish()`,
-  which includes Google Search enrichment for articles missing `reference_urls`.
-  Use this to force a refresh without waiting for the 5-min scheduler cycle.
-
----
-
-### `app/api/routes_ai_providers.py`
-**Role:** CRUD for AI provider configurations (`/ai-providers/`).
-
-- POST register, GET list, GET active, GET by ID, PATCH activate, DELETE active, DELETE by ID.
-- Activating a provider takes effect on the **next** ingest/publish run — no restart needed.
-
----
-
-### `app/api/routes_master_data.py`
-**Role:** Read-only reference data (`/master/`).
-
-- `GET /master/categories` — 8 crime categories for frontend filter UI.
-- `GET /master/sub-categories` — 10 sub-categories.
-- `GET /master/states` — 36 Indian states/UTs for location filtering.
+- `routes_sources.py` — CRUD: GET list, POST create, GET by ID, PATCH update, DELETE.
+- `routes_ingest.py` — `POST /ingest/` triggers `IngestionService.ingest(source)` immediately.
+- `routes_raw_ingestion.py` — read-only monitoring. Shows what was fetched, what was rejected,
+  and why. Critical for debugging "why did article X not appear in the feed?"
+- `routes_filter_articles.py` — read-only view of AI Stage 1 output.
+- `routes_post_processed.py` — shows `imp_score` and `reference_urls` to verify enrichment works.
+- `routes_final_articles.py` — the public ranked feed + `POST /publish` manual trigger.
+  **Important:** `POST /publish` runs `PublishingService.publish()` only — it reads
+  already-enriched `reference_urls` from DB and does **not** call Google Search.
+  To also run enrichment, trigger via `POST /ingest/`.
+- `routes_ai_providers.py` — POST register, PATCH activate, DELETE. Switching a provider
+  takes effect on the **next** ingest run — no restart needed.
+- `routes_master_data.py` — `GET /master/categories`, `/sub-categories`, `/states`.
 
 ---
 
 ### `app/services/scheduler.py`
-**Role:** Registers and manages the two recurring background jobs.
+**What:** Registers recurring background jobs and chains the 3 pipeline steps.
+**Why this design:** See [Section 11](#11-scheduler-design--why-3-steps-not-3-jobs) for a
+full explanation of the scheduling architecture.
 
-Two APScheduler `IntervalTrigger` jobs:
-1. **Ingestion job** — every `INGEST_INTERVAL_MINUTES` (default 5). Calls `IngestionService.ingest()`
-   for every active source concurrently via `asyncio.gather()`.
-2. **Publishing job** — every `PUBLISH_INTERVAL_MINUTES` (default 5) with a `PUBLISH_OFFSET_SECONDS=30`
-   head-start delay so it runs after ingestion finishes.
+Key functions:
 
-After a successful ingestion batch, publishing is also triggered **immediately** (in addition to the
-scheduled interval) so new articles appear in the feed without a 5-minute wait.
+**`start_scheduler()`** — called once at app startup. Registers two APScheduler jobs:
+1. `run_ingestion_for_all_active_sources` — fires every `INGEST_INTERVAL_MINUTES` (default 5).
+2. `run_publishing` — fires every `PUBLISH_INTERVAL_MINUTES` with a `PUBLISH_OFFSET_SECONDS=30`
+   delay so the scheduled publish always runs after scheduled ingestion.
 
 Both jobs use `max_instances=1` — if a run is still in progress when the next trigger fires,
-the new run is skipped rather than creating overlapping concurrent executions.
+the new run is **skipped** rather than creating overlapping concurrent executions.
+
+**`run_ingestion_for_all_active_sources()`** — the main ingestion job:
+1. Loads all active sources.
+2. Runs `_ingest_one_source(source)` for each source concurrently via `asyncio.gather()`.
+3. **If any source produced new articles** (`ok > 0`): immediately calls
+   `run_search_enrichment()` then `run_publishing()` — so new articles appear in the feed
+   without waiting up to 5 minutes for the next scheduled publish cycle.
+
+**`_ingest_one_source(source)`** — creates its own DB session and `IngestionService`
+for one source. **Why a separate function?** Each source gets an isolated DB session so a
+failure in one source doesn't affect others.
+
+**`run_search_enrichment()`** — creates a `SearchEnrichmentService` and calls `.enrich()`.
+Not an APScheduler job — called inline between ingestion and publishing.
+
+**`run_publishing()`** — creates a `PublishingService` and calls `.publish()`.
+
+**`stop_scheduler()`** — called on app shutdown, cleanly stops all background jobs.
 
 ---
 
 ### `app/services/ingestion_service.py`
-**Role:** Orchestrates the complete article lifecycle from fetch to DB write.
+**What:** Orchestrates the complete article lifecycle from fetch to DB write.
+**Why so many steps?** Each step handles one specific concern. The sequence is strict:
+dedup must happen before AI (no point calling AI on an article we already have), keyword
+pre-filter must happen before AI (saves quota), FK resolution must happen after AI
+(categories/location come from AI output).
 
-**Constructor** accepts 5 repositories + raw `AsyncSession`. All are optional — if a repo is `None`,
-that step is skipped (useful for testing or lightweight operation).
+**`ingest(source)` — 13 steps:**
 
-**`ingest(source)` logic — 13 steps:**
-
-1. `_fetch_items(source)` → calls `RSSFetcher` or `RestFetcher` based on `source.type`.
-2. `_load_ai_provider()` → DB config first, env fallback second. Returns `(provider, provider_type)`.
-   `provider_type` determines which rate limits and item cap to apply.
-3. Cap to `max_items` (Ollama: 50, cloud: 5, default: 10).
+1. `_fetch_items(source)` → calls `RSSFetcher` or `RestFetcher` by source type.
+2. `_load_ai_provider()` → DB config first, env fallback second. Returns `(provider, type)`.
+   `provider_type` determines rate limits and item cap.
+3. **Cap** to `max_items` (Ollama: 50, cloud: 5, default: 10). **Why:** Prevents runaway
+   API costs on large feeds.
 4. `compute_content_hash()` for every article — SHA-256 once, reused everywhere.
 5. `raw_repo.store_batch()` → INSERT OR IGNORE. Returns only new + stuck-pending hashes.
+   **Why stuck-pending?** If the app crashed mid-run last time, some rows are stuck in
+   `pending` status. This recovers them on the next cycle.
 6. `_has_crime_keywords(raw)` — checks ~50 crime terms in title/summary/description.
-   Skipped articles go straight to `mark_filtered_out` without any AI call.
-7. `_get_limiter_for(provider_type)` → returns the shared `(_RateLimiter, asyncio.Semaphore)`.
-   Limiters are process-level singletons so all concurrent source tasks share the same quota.
-8. **Ollama batch loop**: for GPU safety, processes articles in `OLLAMA_BATCH_SIZE` chunks with
-   `OLLAMA_BATCH_COOLDOWN_SECONDS` pause between batches. Cloud providers process all at once.
+   **Why:** Calling AI on "Prime Minister visits school" wastes money. Keywords filter
+   ~70% of articles before any AI call.
+7. `_get_limiter_for(provider_type)` → shared `(_RateLimiter, asyncio.Semaphore)`.
+   **Why shared?** Process-level singletons ensure concurrent source tasks share the
+   same quota — two sources can't both max out the rate limit independently.
+8. **Ollama batch loop** — for GPU safety: `OLLAMA_BATCH_SIZE` articles, then
+   `OLLAMA_BATCH_COOLDOWN_SECONDS` pause. **Why:** Continuous GPU load causes thermal
+   throttling. Short cooldowns keep the GPU healthy on a single card like RTX 3060.
 9. `asyncio.gather()` with `process_with_semaphore()` — concurrency bounded by semaphore,
    rate bounded by `_RateLimiter.wait()`. Each call: `ai_provider.process(raw, source_type)`.
-10. **Bucket results**: crime / filtered_out / failed.
-11. `load_resolvers(db)` → loads `CategoryResolver` (enum-based, zero queries) and
-    `LocationResolver` (one DB query: full `state` table). Resolves AI string labels to FK integers.
+10. **Bucket results:** crime / filtered_out / failed.
+11. `load_resolvers(db)` → loads `CategoryResolver` (enum, zero queries) and
+    `LocationResolver` (one DB query for 36 state rows). Resolves AI text → FK integers.
 12. `filter_article_repo.insert_batch()` then `post_processed_repo.insert_batch()`.
 13. `_update_raw_statuses()` → marks every raw row with its final status.
 
-**Retry logic** in `_call_with_retry()`: on rate-limit errors (HTTP 429, "quota", "resource_exhausted"),
-retries with exponential back-off: `delay × 2^attempt`. Non-rate-limit errors fail immediately.
+**Retry logic** in `_call_with_retry()`: on rate-limit errors (HTTP 429, "quota",
+"resource_exhausted"), retries with exponential back-off: `delay × 2^attempt`.
+Non-rate-limit errors fail immediately. **Why:** Cloud AI APIs occasionally throttle
+even under quota — transient retries recover from blips without failing the whole batch.
 
 ---
 
 ### `app/services/publishing_service.py`
-**Role:** Selects top articles, enriches with reference URLs, computes rank scores, upserts feed.
+**What:** Selects top articles, computes rank scores, upserts the public feed.
+**Why does PublishingService NOT call Google Search?** Search enrichment was deliberately
+moved into a separate `SearchEnrichmentService` that runs *before* publishing. This means
+publishing is fast, deterministic, and never touches an external API. Each article's
+`reference_urls` is already populated in the DB by the time publishing runs.
 
 **`publish(top_n=20)` logic:**
 
 1. `post_processed_repo.get_top_by_imp_score(limit=top_n)` — ordered by `imp_score DESC`.
-2. Build row dicts with `rank_score = imp_score × _time_decay_factor(published_at)`.
-3. **Google Search enrichment** (if `GOOGLE_SEARCH_API_KEY` configured):
-   - Finds rows where `reference_urls` is `None` or empty.
-   - Calls `enrich_articles_with_reference_urls(needs_search)` — sequential with delay.
-   - Persists found URLs back to `post_processed_articles` via `update_reference_urls()`
-     so the next publish cycle skips them and saves API quota.
-4. `final_article_repo.upsert_batch(rows)` — ON CONFLICT updates `rank_score` + `reference_urls`.
+2. For each article: `rank_score = imp_score × _time_decay_factor(published_at)`.
+   `reference_urls` is read directly from the already-enriched DB row (`or []` for safety).
+3. `final_article_repo.upsert_batch(rows)` — updates score each cycle without duplicates.
+
+**`_time_decay_factor(published_at)` — why this function exists:**
+A story from 1 hour ago is more important than the same-severity story from yesterday.
+This function returns a multiplier between 0.10 and 1.00 based on article age, so
+`rank_score = imp_score × decay` naturally surfaces fresh news.
 
 **Time-decay table:**
 
-| Age | Factor | Config var |
-|-----|--------|-----------|
-| < 6 hours | 1.00 | `DECAY_FRESH` |
-| 6–24 hours | 0.75 | `DECAY_RECENT` |
-| 1–3 days | 0.50 | `DECAY_DAY` |
-| 3–7 days | 0.25 | `DECAY_WEEK` |
-| > 7 days | 0.10 | `DECAY_OLD` |
+| Age of article | Decay multiplier | Config variable |
+|----------------|-----------------|-----------------|
+| Under 6 hours  | 1.00 (full score) | `DECAY_FRESH` |
+| 6–24 hours     | 0.75             | `DECAY_RECENT` |
+| 1–3 days       | 0.50             | `DECAY_DAY`    |
+| 3–7 days       | 0.25             | `DECAY_WEEK`   |
+| Over 7 days    | 0.10             | `DECAY_OLD`    |
+
+Example: `imp_score=80`, article 10 hours old → `80 × 0.75 = 60.0 rank_score`
 
 ---
 
-### `app/services/google_search_service.py`  *(NEW)*
-**Role:** Google Custom Search API client for reference URL enrichment.
+### `app/services/search_enrichment_service.py`
+**What:** Orchestrates Google Search enrichment — once per article, idempotent.
+**Why a separate service class?** Separating enrichment from publishing means:
+1. Each concern has one place in the code.
+2. `PublishingService` stays simple (no external API calls).
+3. `SearchEnrichmentService` can be reasoned about independently (quota logic lives here).
 
-- `fetch_related_urls(title)` — single `httpx.AsyncClient` GET to the Custom Search JSON API.
-  Returns a list of URLs from `data["items"][*]["link"]`. Returns `[]` on any error (non-fatal).
-- `enrich_articles_with_reference_urls(articles)` — iterates over article dicts, skips any
-  that already have `reference_urls` set (quota conservation). Calls `fetch_related_urls()` for
-  each, writes results into `article["reference_urls"]` in-place.
-- Between every request: `asyncio.sleep(GOOGLE_SEARCH_DELAY_SECONDS)` to stay within the
-  100 queries/day free tier. Default delay: 1 second.
-- Both functions check `settings.GOOGLE_SEARCH_API_KEY` and `settings.GOOGLE_SEARCH_ENGINE_ID`
-  at the start and return early if either is missing — the service degrades gracefully to no-op.
+**`SearchEnrichmentService.enrich()` — what it does:**
+
+1. Checks that `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_ENGINE_ID` are configured.
+   If not → returns 0 immediately (graceful no-op, no errors).
+2. Calls `post_processed_repo.get_without_reference_urls(limit=GOOGLE_SEARCH_MAX_PER_RUN)`.
+   Only articles with `reference_urls IS NULL` are returned. **Why the limit?**
+   Free quota guard — caps how many searches happen per scheduler run.
+3. For each article:
+   - `fetch_related_urls(article.title)` → calls Google Custom Search API.
+   - Got URLs? → `update_reference_urls(id, urls)` stores `[url1, url2, ...]`.
+   - No URLs? → `mark_reference_urls_searched(id)` stores `[]` (sentinel).
+4. `asyncio.sleep(GOOGLE_SEARCH_DELAY_SECONDS)` between every request. **Why:**
+   Google's free tier allows 100 queries/day but can throttle burst requests.
+5. Returns count of articles that received real URLs.
+
+**Idempotency contract — why each article is searched at most once:**
+
+| `reference_urls` value | Meaning | Will it be searched again? |
+|------------------------|---------|---------------------------|
+| `NULL` | Never searched yet | ✅ Yes — included in next run |
+| `[]` (empty list) | Searched, nothing found | ❌ No — `IS NULL` query excludes it |
+| `[url1, url2, ...]` | Enriched successfully | ❌ No — `IS NULL` query excludes it |
+
+This design means: even though the scheduler fires 288 times/day (every 5 minutes),
+the total Google Search quota spend equals the number of **distinct new articles** —
+not the number of scheduler runs.
+
+---
+
+### `app/services/google_search_service.py`
+**What:** Low-level Google Custom Search API client.
+**Why separated from `SearchEnrichmentService`?** The enrichment service handles orchestration
+(which articles, quota management, DB writes). This file handles only the HTTP call to Google.
+Separation makes each file testable independently.
+
+**`fetch_related_urls(title)` — the core function:**
+- Sends one GET request to `https://www.googleapis.com/customsearch/v1` with the article title.
+- Extracts `item["link"]` from `data["items"]`.
+- Returns `[]` on any error (HTTP error, timeout, quota exceeded) — **non-fatal**.
+  The caller (`SearchEnrichmentService`) handles the empty list by storing the sentinel.
+- Uses `httpx.AsyncClient` with a 10s timeout — non-blocking, won't freeze the event loop.
+
+**`enrich_articles_with_reference_urls(articles)`** — legacy helper:
+- Populates `reference_urls` in-place on a list of article dicts.
+- Kept for manual or API-level use.
+- `SearchEnrichmentService` calls `fetch_related_urls()` directly and handles DB persistence.
 
 ---
 
 ### `app/services/fetchers/rss_fetcher.py`
-**Role:** Async RSS/Atom feed fetcher.
-
-- Wraps `feedparser.parse(url)` in `asyncio.to_thread()` — feedparser is synchronous/blocking;
-  running it in a thread prevents it from blocking the async event loop.
-- Returns `feed` object (callers use `feed.entries`).
+**What:** Async RSS/Atom feed downloader.
+**Why `asyncio.to_thread()`?** `feedparser.parse()` is a synchronous blocking call.
+Running it directly in async code would freeze the entire event loop (blocking all other
+requests). Wrapping it in `to_thread()` runs it in a thread pool — async-safe.
 
 ---
 
 ### `app/services/fetchers/rest_fetcher.py`
-**Role:** Async REST API fetcher.
+**What:** Async REST API fetcher.
 
 - `httpx.AsyncClient.get(url, headers=headers)` with 15s timeout.
 - Handles two response shapes: a list at root `[{...}, ...]` or a dict with an
-  `articles` / `items` / `results` / `data` key containing the list.
-- Returns `list[dict]`.
+  `articles` / `items` / `results` / `data` key.
+- **Why these two shapes?** Different news APIs return data differently. This normalises both.
 
 ---
 
 ### `app/services/source_normalizer.py`
-**Role:** Converts raw feed objects into plain dicts.
+**What:** Converts raw feed objects into plain dicts.
+**Why needed?** `feedparser` returns `FeedParserDict` objects (not plain Python dicts) with
+special types like `time.struct_time` for dates. These can't be serialised to JSON or stored
+directly. `to_plain_dict()` converts everything to plain strings and datetimes.
 
-- `to_plain_dict(entry)` — handles feedparser-specific types (`feedparser.FeedParserDict`,
-  `time.struct_time`), HTML entity decoding, nested objects → strings.
-- `parse_date(s)` — tries ISO 8601, RFC 2822, and common formats; converts to UTC-aware `datetime`.
+- `to_plain_dict(entry)` — handles feedparser-specific types, HTML entity decoding.
+- `parse_date(s)` — tries ISO 8601, RFC 2822, common date formats; converts to UTC datetime.
 
 ---
 
 ### `app/services/normalization/ai_processor.py`
-**Role:** Environment-variable fallback provider resolver.
+**What:** Environment-variable fallback provider resolver.
+**Why separate from the factory?** The factory builds providers from DB config. This file
+handles the case when there's no DB config — it reads env vars in priority order.
 
-- `get_env_fallback_provider()` — checks env vars in priority order:
-  1. `OLLAMA_MODEL` set? → `create_ollama_from_env()`
-  2. `GEMINI_API_KEY` set? → `create_gemini_multimodal_from_env()`
-  3. `ANTHROPIC_API_KEY` set? → `create_from_env()`
-  4. Nothing → return `None`
-- Called by `IngestionService._load_ai_provider()` when no DB config is active.
+- `get_env_fallback_provider()` — checks in order:
+  1. `OLLAMA_MODEL` set? → Ollama provider (local GPU)
+  2. `GEMINI_API_KEY` set? → Gemini Multimodal provider
+  3. `ANTHROPIC_API_KEY` set? → Anthropic Claude provider
+  4. None of the above → return `None` → skip AI this run
 
 ---
 
 ### `app/services/normalization/provider_factory.py`
-**Role:** Factory that creates and caches `AIProvider` instances.
+**What:** Factory that creates and caches `AIProvider` instances.
+**Why a cache?** SDK clients (like `openai.AsyncOpenAI`) are expensive to construct — they
+establish connection pools. Creating a new client for every article (or even every ingest run)
+wastes resources. The cache ensures one client is created once and reused.
 
 - `_provider_cache: dict[tuple, AIProvider]` — module-level process singleton.
-- Cache key = `(config.id, config.model, config.api_key)` — ensures a new SDK client
-  is created if the key changes, but the same client is reused across all ingest runs.
-- `create_from_config(config)` — used for DB-configured providers.
-- `create_ollama_from_env(base_url, model)` — builds `OpenAICompatibleProvider` with `api_key="ollama"`.
-- `create_gemini_multimodal_from_env(api_key, model)` — recommended Gemini path.
+- Cache key = `(config.id, config.model, config.api_key)` — a new client is created only if
+  the active config actually changes. Activating a different provider → cache miss → new client.
 - `_build(config)` — the `if/elif` dispatch that instantiates the correct provider subclass.
 
 ---
 
 ### `app/services/normalization/providers/base.py`
-**Role:** ABC, shared prompt, JSON parser, output schema.
+**What:** ABC, shared prompt, JSON parser, output schema.
+**Why put the prompt here?** All providers must use the same prompt (same task, same JSON
+output schema). Defining it in one place (the base class) means changing the prompt updates
+all providers simultaneously — no risk of providers diverging.
 
-- `SINGLE_PROCESS_PROMPT` — the system prompt used by all providers. Instructs the model to
-  return `{"is_crime": false}` immediately for non-crime (minimal tokens) or the full JSON for crime.
-- `SingleOutput` (Pydantic model) — validates the AI JSON response. Field validators:
-  - `_check_url` — rejects relative or non-HTTP URLs.
-  - `_check_sub_category` — rejects unknown category strings.
-  - `_check_imp_score` — clamps to 1–100.
-- `_extract_json(text)` — cleans raw AI text before `json.loads()`:
-  1. Strips ` ```json ... ``` ` markdown fences.
-  2. Strips `<think>...</think>` (Qwen3).
-  3. Strips `<thinking>...</thinking>` (Claude/Gemini).
-  4. Slices from first `{` to last `}` to discard preamble prose.
-- `parse_single_output(text, raw_payload)` — calls `_extract_json` → `json.loads` → `SingleOutput.model_validate`.
-  Falls back URL to `raw_payload["link"]` if the AI omitted it.
-- `AIProvider` ABC defines two abstract members: `model_id` property and `process()` coroutine.
-- `build_process_message(raw_payload, source_type)` — serializes the input JSON for the AI user message.
+- `SINGLE_PROCESS_PROMPT` — instructs the AI to return `{"is_crime": false}` immediately for
+  non-crime (minimal tokens = minimal cost), or full extraction JSON for crime articles.
+- `SingleOutput` (Pydantic) — validates the AI JSON. Field validators catch bad URLs, unknown
+  categories, and out-of-range scores before they reach the DB.
+- `_extract_json(text)` — cleans raw AI text before parsing:
+  1. Strips ` ```json ... ``` ` markdown fences (some models wrap output in code blocks).
+  2. Strips `<think>...</think>` (Qwen3 reasoning models).
+  3. Strips `<thinking>...</thinking>` (Claude / Gemini).
+  4. Slices from first `{` to last `}` — discards any prose the model added before/after JSON.
+- `parse_single_output(text, raw_payload)` — calls `_extract_json` → `json.loads` →
+  `SingleOutput.model_validate`. Falls back URL to `raw_payload["link"]` if AI omitted it.
+- `AIProvider` ABC — two abstract members: `model_id` property and `process()` coroutine.
+  **Why an ABC?** Forces every provider to implement the same interface — the rest of the
+  pipeline only needs to call `provider.process(raw, type)` regardless of which AI is active.
+- `build_process_message(raw_payload, source_type)` — serialises article data for the AI.
 
 ---
 
 ### `app/services/normalization/providers/openai_prov.py`
-**Role:** Provider for OpenAI, Ollama, Gemini (OpenAI-compat), and custom servers.
+**What:** Provider for OpenAI, Ollama, Gemini (OpenAI-compat), and custom servers.
+**Why one class for all these?** They all speak the OpenAI API protocol. The only differences
+are `api_key` and `base_url`. One class handles all of them.
 
-- Uses `openai.AsyncOpenAI(api_key, base_url)` with `response_format={"type": "json_object"}` (JSON mode).
-- Works for Ollama (no real key needed, `base_url=http://localhost:11434/v1`), standard OpenAI,
-  and any vLLM / LM Studio / remote Ollama server.
-- `model_id` returns `"ai:{base_host}:{model}"` for the audit trail.
+- Uses `openai.AsyncOpenAI(api_key, base_url)` with `response_format={"type": "json_object"}`.
+- Ollama: `base_url=http://localhost:11434/v1`, `api_key="ollama"` (placeholder key).
+- Custom vLLM / LM Studio: same class, different `base_url`.
 
 ---
 
 ### `app/services/normalization/providers/anthropic_prov.py`
-**Role:** Provider for Anthropic Claude models.
+**What:** Provider for Anthropic Claude models.
+**Why a separate class?** Anthropic's SDK is different from OpenAI's — different method names,
+message structure, and response format. One dedicated class isolates these differences.
 
 - Uses `anthropic.AsyncAnthropic(api_key)`.
-- Same `SINGLE_PROCESS_PROMPT` as system message; same `parse_single_output()` for JSON parsing.
-- `model_id` returns `"ai:anthropic:{model}"`.
+- Same prompt and JSON parsing as other providers.
 
 ---
 
 ### `app/services/normalization/providers/gemini_multimodal_prov.py`
-**Role:** Recommended Gemini provider using LangGraph structured output.
+**What:** Recommended Gemini provider using LangGraph structured output.
+**Why "structured output"?** With `with_structured_output(SingleOutput)`, Gemini returns a
+Pydantic object directly — no JSON parsing needed, no risk of malformed JSON from the model.
+This is more reliable than text parsing.
 
-- Uses `langchain-google-genai` with `with_structured_output(SingleOutput)` — model returns a
-  Pydantic object directly, no regex/JSON parsing needed.
-- LangGraph graph: `START → extract_node (zero-cost: just formats the message) → classify_node
-  (one Gemini API call) → END`.
+- LangGraph graph: `START → extract_node → classify_node → END`.
 - Supports image URLs in the message for visual context (multimodal).
-- `model_id` returns `"ai:gemini_multimodal:{model}"`.
 
 ---
 
 ### `app/services/normalization/providers/gemini_langgraph_prov.py`
-**Role:** Simpler Gemini provider (single `ainvoke()` call).
-
-- Uses `langchain-google-genai` without structured output — parses the raw text response
-  via `parse_single_output()` fallback.
-- Less robust than `gemini_multimodal_prov` for complex outputs.
+**What:** Simpler Gemini provider (single `ainvoke()` call, text response).
+**Why keep it?** Fallback for models/scenarios where structured output isn't available.
+Less robust than `gemini_multimodal_prov` for complex outputs.
 
 ---
 
 ### `app/services/normalization/resolvers.py`
-**Role:** Converts AI string outputs to FK integer IDs.
+**What:** Converts AI string outputs to FK integer IDs.
+**Why not just store strings?** Integer FKs are faster to index and join than strings.
+Enforcing FK constraints at the DB level prevents garbage data from the AI.
 
 **`CategoryResolver`** (zero DB queries):
 - Loaded from `SubCategoryEnum` (enum values → DB IDs).
 - `resolve("murder")` → `1`
 - `resolve_all(["murder", "terrorism"])` → `[1, 5]`
-- `resolve_categories_from_ids([1, 5])` → `[1]` (Violent Crime parent)
+- `resolve_categories_from_ids([1, 5])` → `[1]` (Violent Crime parent ID)
 
 **`LocationResolver`** (one DB query at init):
-- Loads the entire `state` table (36 rows) into memory.
+- Loads all 36 state rows into memory at construction time.
 - `resolve("Mumbai, Maharashtra, India")` — tries substring match on state name, then
-  checks 80+ city aliases (`"Mumbai" → "Maharashtra"`), then returns `None` for non-Indian locations.
+  checks 80+ city-to-state aliases (`"Mumbai" → "Maharashtra"`).
+- Returns `None` for non-Indian locations (not stored).
+- **Why load all 36 rows?** It's tiny. One query at init is faster than 36 individual
+  queries (one per article).
 
-`load_resolvers(db)` — async factory that runs both in one call, used by `IngestionService`.
+`load_resolvers(db)` — async factory that constructs both in one call.
 
 ---
 
 ### `app/services/normalization/canonical_validator.py`
-**Role:** URL and field sanitation helpers.
-
-- Validates that URLs are absolute HTTP(S) and normalizes trailing slashes.
-- Used during the insert_batch phase to clean up any AI-returned values before DB write.
+**What:** URL and field sanitisation helpers.
+**Why?** AI models occasionally return relative URLs (`/crime/story`) or non-HTTP URLs.
+These would fail FK constraints or look broken in the frontend. Validation at insert time
+prevents bad data from ever reaching the DB.
 
 ---
 
-## 6. Database Schema
+## 7. Database Schema — The 9 Tables Explained
 
-### Article lifecycle
+### Article lifecycle through tables
 
 ```
 news_sources
     │
-    └─► raw_ingestion          (every article ever seen — deduped by SHA-256)
+    └─► raw_ingestion          (inbox: every article ever fetched, deduplicated by SHA-256)
             │  status: pending → filtered / filtered_out / failed
             │
-            └─► filtered_articles       (AI-confirmed crime articles)
+            └─► filtered_articles       (AI-confirmed crime articles only)
                     │
-                    └─► post_processed_articles  (enriched: reference_urls added)
+                    └─► post_processed_articles  (+ reference_urls from Google Search)
                                 │
-                                └─► final_articles  (public ranked feed: top N by rank_score)
+                                └─► final_articles  (public feed: top N ranked by rank_score)
 ```
+
+### Why 4 stages instead of one table?
+
+Each stage has a different purpose and different code writes to it:
+- `raw_ingestion` = audit log + dedup gate. Written by the fetcher before any AI.
+- `filtered_articles` = AI output. Written after the AI says "yes, crime".
+- `post_processed_articles` = enrichment staging. Written at same time as `filtered_articles`,
+  then updated by search enrichment.
+- `final_articles` = public feed snapshot. Written by publishing service; re-written every cycle.
+
+If everything were in one table, every step would require complex conditional logic to know
+what had been done to each row.
 
 ### `raw_ingestion` — status values explained
 
-| Status | Meaning |
-|--------|---------|
-| `pending` | Fetched, stored, not yet processed |
-| `filtered` | AI confirmed crime — row exists in `filtered_articles` |
-| `filtered_out` | Keyword pre-filter OR AI said not crime |
-| `failed` | AI call failed (timeout, bad JSON, etc.) |
+| Status | What happened |
+|--------|--------------|
+| `pending` | Fetched and stored, not yet processed |
+| `filtered` | AI confirmed crime — a row exists in `filtered_articles` |
+| `filtered_out` | Keyword pre-filter rejected it, OR AI said "not crime" |
+| `failed` | AI call failed (timeout, bad JSON, network error) |
 | `processed` | (legacy) fully post-processed |
 
 ### `final_articles.rank_score` formula
@@ -835,21 +976,37 @@ news_sources
 rank_score = imp_score × time_decay_factor(published_at)
 ```
 
-Example: `imp_score=80`, article 10h old → `80 × 0.75 = 60.0`
+**Example calculations:**
+- `imp_score=80`, article 3h old → `80 × 1.00 = 80.0` (fresh, full score)
+- `imp_score=80`, article 10h old → `80 × 0.75 = 60.0` (same article, scored later)
+- `imp_score=80`, article 2 days old → `80 × 0.50 = 40.0`
+- `imp_score=50`, article 1h old → `50 × 1.00 = 50.0` (less important but very fresh)
+
+### PostgreSQL `reference_urls` — ARRAY vs JSONB
+
+`reference_urls` uses `ARRAY(Text)` rather than JSONB because:
+- The data is a simple flat list of strings, not a nested structure.
+- PostgreSQL's `IS NULL` vs `= '{}'` (empty array) distinction is what powers the
+  idempotency logic — `NULL` means "never searched", `{}` means "searched, nothing found".
 
 ### Performance indexes
 
 ```sql
-CREATE INDEX ix_raw_ingestion_status      ON raw_ingestion(status);
+-- Fast status filtering in the monitoring endpoint
+CREATE INDEX ix_raw_ingestion_status ON raw_ingestion(status);
+
+-- Fast crime sub-type filtering in the final feed
 CREATE INDEX ix_filtered_sub_category_ids ON filtered_articles USING GIN(sub_category_ids);
 CREATE INDEX ix_filtered_category_ids     ON filtered_articles USING GIN(category_ids);
-CREATE INDEX ix_post_processed_imp_score  ON post_processed_articles(imp_score)
+
+-- Fast top-N queries for publishing
+CREATE INDEX ix_post_processed_imp_score ON post_processed_articles(imp_score)
     WHERE imp_score IS NOT NULL;
 ```
 
 ---
 
-## 7. End-to-End Pipeline Flow
+## 8. End-to-End Pipeline Flow — Step by Step
 
 ### Full automated cycle (every 5 minutes)
 
@@ -858,7 +1015,7 @@ APScheduler fires: run_ingestion_for_all_active_sources()
   │
   ├── source_repo.get_all(active_only=True)
   │
-  └── asyncio.gather([_ingest_one_source(s) for s in sources])
+  └── asyncio.gather([_ingest_one_source(s) for s in sources])  ← all sources in parallel
         │
         └── IngestionService.ingest(source)
               │
@@ -867,115 +1024,119 @@ APScheduler fires: run_ingestion_for_all_active_sources()
               │     RestFetcher.fetch(url)  → httpx.AsyncClient.get()
               │     source_normalizer.to_plain_dict(entry)  → plain dict
               │
-              ├── 2. LOAD PROVIDER
-              │     ai_provider_repo.get_active()   → DB config row (priority)
+              ├── 2. LOAD AI PROVIDER
+              │     ai_provider_repo.get_active()   → DB config row (highest priority)
               │     create_from_config(config)       → cached SDK client
               │       OR
-              │     get_env_fallback_provider()      → from .env keys
-              │     → determines provider_type (ollama / gemini_multimodal / etc.)
-              │     → determines rate limits + item cap
+              │     get_env_fallback_provider()      → OLLAMA_MODEL / GEMINI_API_KEY / ANTHROPIC_API_KEY
+              │     → determines provider_type → determines rate limits and item cap
               │
               ├── 3. CAP
               │     slice raw_items to max_items_for_provider_type
+              │     (Ollama: 50, cloud: 5, default: 10)
               │
               ├── 4. HASH + DEDUP
               │     SHA-256(source_id + json(payload)) per article
               │     raw_repo.store_batch() → INSERT OR IGNORE on content_hash
-              │     returns new hashes + previously stuck-pending hashes
+              │     returns: new hashes + previously stuck-pending hashes (recovery)
               │
               ├── 5. KEYWORD PRE-FILTER
-              │     _has_crime_keywords(raw) — ~50 crime terms
-              │     no match → mark_filtered_out (no AI call)
+              │     _has_crime_keywords(raw) — ~50 crime terms in title/summary
+              │     no match → mark_filtered_out immediately (zero AI calls)
               │
               ├── 6. AI PROCESSING
-              │     For Ollama: batches of OLLAMA_BATCH_SIZE with cooldown pause
-              │     For cloud: all at once
-              │     asyncio.gather():
-              │       process_with_semaphore(hash, raw)
-              │         async with semaphore:        ← concurrency limit
-              │           await rate_limiter.wait()  ← RPM limit
-              │           ai_provider.process(raw, source_type)
-              │             → SINGLE_PROCESS_PROMPT + raw JSON
-              │             → model returns JSON string
-              │             → _extract_json() strips fences + think blocks
-              │             → SingleOutput.model_validate() checks all fields
-              │             → returns article dict or {"is_crime": false} or None
+              │     Ollama:  process in batches of OLLAMA_BATCH_SIZE, pause between batches
+              │     Cloud:   process all at once
+              │     asyncio.gather() with semaphore (concurrency) + rate limiter (RPM):
+              │       ai_provider.process(raw, source_type)
+              │         → SINGLE_PROCESS_PROMPT (system) + raw JSON (user)
+              │         → model responds with JSON string
+              │         → _extract_json() strips fences + think blocks
+              │         → SingleOutput.model_validate() validates all fields
+              │         → returns article dict or {"is_crime": false} or None (error)
               │
               ├── 7. BUCKET RESULTS
-              │     is_crime=True  → crime_articles list
+              │     is_crime=True  → crime_articles
               │     is_crime=False → filtered_out_hashes
-              │     result=None    → failed_hashes
-              │     exception      → failed_hashes
+              │     result=None / exception → failed_hashes
               │
               ├── 8. RESOLVE FKs
-              │     load_resolvers(db) — loads state table + enums
-              │     CategoryResolver.resolve_all(sub_category_ids strings → int list)
-              │     CategoryResolver.resolve_categories_from_ids(→ parent int list)
+              │     CategoryResolver.resolve_all(sub_category strings → int list)
               │     LocationResolver.resolve(location string → state_id int or None)
               │
               ├── 9. WRITE TO DB
-              │     filter_article_repo.insert_batch()   → filtered_articles
+              │     filter_article_repo.insert_batch()   → filtered_articles (upsert on main_url)
               │     post_processed_repo.insert_batch()   → post_processed_articles
+              │     (reference_urls = NULL at this point — not yet searched)
               │
               └── 10. UPDATE RAW STATUSES
-                    raw_repo.mark_filtered(filtered_hashes)
-                    raw_repo.mark_filtered_out(filtered_out_hashes)
-                    raw_repo.mark_failed(failed_hashes)
+                    raw_repo.mark_filtered(hashes)
+                    raw_repo.mark_filtered_out(hashes)
+                    raw_repo.mark_failed(hashes)
 
-  └── (if any source returned count > 0) → PublishingService.publish(top_n=20)
+  └── (if ok > 0 — at least one source produced new articles)
         │
-        ├── 1. SELECT
-        │     post_processed_repo.get_top_by_imp_score(limit=20)
-        │     ordered by imp_score DESC WHERE imp_score IS NOT NULL
+        ├── SearchEnrichmentService.enrich()   ← RUNS BEFORE PUBLISHING
+        │     │
+        │     ├── 1. QUERY UNENRICHED (quota-capped)
+        │     │     get_without_reference_urls(limit=GOOGLE_SEARCH_MAX_PER_RUN)
+        │     │     WHERE reference_urls IS NULL   ← NULL only; [] sentinel excluded
+        │     │     ORDER BY imp_score DESC         ← most important articles first
+        │     │
+        │     └── 2. FOR EACH ARTICLE (sequential, not parallel — quota protection)
+        │           google_search_service.fetch_related_urls(title)
+        │             GET https://www.googleapis.com/customsearch/v1?q=title&num=3&key=...&cx=...
+        │             → extract item["link"] from response["items"]
         │
-        ├── 2. COMPUTE rank_score
-        │     imp_score × time_decay_factor(published_at)
-        │     1.00 / 0.75 / 0.50 / 0.25 / 0.10 by age bracket
+        │           got URLs?  YES → update_reference_urls(id, [url1, url2, ...])
+        │                      NO  → mark_reference_urls_searched(id)  → stores []
         │
-        ├── 3. GOOGLE SEARCH ENRICHMENT (if keys configured)
-        │     finds rows where reference_urls is None
-        │     enrich_articles_with_reference_urls(needs_search)
-        │       for each article:
-        │         fetch_related_urls(title)
-        │           → GET https://www.googleapis.com/customsearch/v1?q=title&num=3
-        │           → extract item["link"] list
-        │         article["reference_urls"] = urls
-        │         asyncio.sleep(GOOGLE_SEARCH_DELAY_SECONDS)  ← quota guard
-        │     post_processed_repo.update_reference_urls()  ← persist, skip next cycle
+        │           asyncio.sleep(GOOGLE_SEARCH_DELAY_SECONDS)  ← 1s between requests
+        │           ← this article will NEVER appear in get_without_reference_urls again
         │
-        └── 4. UPSERT FEED
-              final_article_repo.upsert_batch(rows)
-              ON CONFLICT (post_processed_article_id) DO UPDATE
-                SET rank_score, reference_urls, title, description, image_url
+        └── PublishingService.publish(top_n=FEED_TOP_N)
+              │
+              ├── 1. SELECT TOP-N
+              │     get_top_by_imp_score(limit=20)
+              │     ORDER BY imp_score DESC WHERE imp_score IS NOT NULL
+              │
+              ├── 2. COMPUTE rank_score
+              │     imp_score × time_decay_factor(published_at)
+              │     reference_urls already in DB — no Google Search call here
+              │
+              └── 3. UPSERT PUBLIC FEED
+                    final_article_repo.upsert_batch(rows)
+                    ON CONFLICT (post_processed_article_id) DO UPDATE
+                      SET rank_score, reference_urls, title, description, image_url
 ```
 
 ---
 
-## 8. AI Provider System
+## 9. AI Provider System
 
 ### Provider resolution order
 
 ```
 IngestionService._load_ai_provider()
   │
-  ├── 1. ai_provider_repo.get_active()   ← DB (highest priority)
+  ├── 1. ai_provider_repo.get_active()   ← DB config (highest priority)
   │         └── create_from_config(config) [process-lifetime cached]
   │
   └── 2. get_env_fallback_provider()    ← .env keys
-            OLLAMA_MODEL set?      → OllamaProvider (local, offline)
+            OLLAMA_MODEL set?      → OllamaProvider (local, no key needed)
             GEMINI_API_KEY set?    → GeminiMultimodalLangGraph
             ANTHROPIC_API_KEY set? → AnthropicProvider
-            none                   → None → skip AI this run
+            none of the above     → None → skip AI this run (log a warning)
 ```
 
 ### Supported providers
 
-| Type | Class | Notes |
-|------|-------|-------|
-| `ollama` | `OpenAICompatibleProvider` | Local, no key, `localhost:11434/v1` auto-set |
+| Type | Underlying class | Notes |
+|------|-----------------|-------|
+| `ollama` | `OpenAICompatibleProvider` | Local GPU, no API key, `localhost:11434/v1` auto-set |
 | `gemini_multimodal` | `GeminiMultimodalLangGraphProvider` | **Recommended cloud** — structured output |
 | `gemini_langgraph` | `GeminiLangGraphProvider` | Simpler Gemini, text parsing fallback |
-| `gemini` | `OpenAICompatibleProvider` | Gemini via OpenAI-compat endpoint |
+| `gemini` | `OpenAICompatibleProvider` | Gemini via OpenAI-compatible endpoint |
 | `anthropic` | `AnthropicProvider` | Claude models |
 | `openai` | `OpenAICompatibleProvider` | GPT models |
 | `custom` | `OpenAICompatibleProvider` | vLLM, LM Studio, remote Ollama — requires `base_url` |
@@ -985,108 +1146,224 @@ IngestionService._load_ai_provider()
 Cache key = `(config.id, config.model, config.api_key)`.
 SDK clients are created once and reused across all ingest runs until the server restarts.
 Switching the active provider creates a fresh client on the next run; the old one stays
-in cache but is never accessed again.
+in the cache dict but is never called again.
 
 ### The AI prompt
 
 `SINGLE_PROCESS_PROMPT` from `providers/base.py` instructs the model to:
-- Return `{"is_crime": false}` immediately for non-crime (minimal token cost)
-- Return the full extraction + rewrite + scoring JSON in one call for crime articles
+- Return `{"is_crime": false}` immediately for non-crime articles (minimal token cost)
+- Return the full extraction + rewrite + scoring JSON in **one call** for crime articles
+
+**Why one call?** Making separate calls for "is this crime?" then "extract data" would double
+the API cost and latency. A well-crafted prompt does both in a single response.
 
 ### JSON parsing pipeline
 
 ```
-AI raw text
+AI raw text response
   → _extract_json()
-      → strip ``` fences
-      → strip <think>...</think>  (Qwen3)
-      → strip <thinking>...</thinking>  (Claude / Gemini)
-      → slice [first '{' : last '}']
+      strip ``` json ... ``` fences      (models often wrap output)
+      strip <think>...</think>           (Qwen3 reasoning chains)
+      strip <thinking>...</thinking>     (Claude / Gemini reasoning)
+      slice [first '{' : last '}']       (discard prose before/after JSON)
   → json.loads()
-  → SingleOutput.model_validate()  (Pydantic — rejects bad URLs, unknown categories, etc.)
+  → SingleOutput.model_validate()
+      _check_url: reject relative or non-HTTPS URLs
+      _check_sub_category: reject unknown category strings
+      _check_imp_score: clamp to 1–100
   → parse_single_output() returns article dict or None
 ```
 
 ---
 
-## 9. Google Search Reference URL Enrichment
+## 10. Google Search Reference URL Enrichment — Design Deep Dive
 
-### What it does
+### The problem this solves
 
-After selecting top articles for the feed, `PublishingService` calls the Google Custom Search API
-to find 3 related news URLs per article. These are stored in `reference_urls` on both
-`post_processed_articles` (permanent cache) and `final_articles` (served to frontend).
+When we display a crime story to users, we want to show them "Read more" links — other news
+sources covering the same story. We could call Google Search every time we publish the feed,
+but that would burn 20 quota units per publish cycle × 288 cycles/day = 5760 queries/day
+against a 100 queries/day free limit.
 
-### Setup
+### The solution: search once, store forever
 
-1. Create a Google Custom Search Engine at `programmablesearchengine.google.com`
-2. Enable the Custom Search JSON API in Google Cloud Console
-3. Add to `.env`:
+```
+         Article published                  Article published
+         to final_articles                  again next cycle
+              ↓                                   ↓
+ post_processed   reference_urls = NULL       reference_urls = [url1, url2]
+                        ↓                                ↓
+              SearchEnrichmentService           (excluded from query)
+              calls Google Search              PublishingService reads
+              stores [url1, url2]              from DB — no Google call
+```
+
+The `reference_urls` field on `post_processed_articles` acts as both storage and a
+"search state machine" with three states:
+
+| State | DB value | Meaning | Will SearchEnrichmentService touch it again? |
+|-------|----------|---------|---------------------------------------------|
+| Unsearched | `NULL` | Never queried Google for this article | ✅ Yes — eligible |
+| Searched, no results | `[]` (empty array) | Google returned nothing | ❌ No — sentinel |
+| Enriched | `[url1, url2, ...]` | Has reference URLs | ❌ No — already done |
+
+**Why the sentinel `[]` instead of a separate boolean column?**
+A boolean `search_attempted` column would work too, but the ARRAY field already exists.
+Storing `[]` uses the existing column as a state flag, avoiding an extra migration and
+keeping all reference URL state in one place.
+
+### Quota math
+
+```
+Free tier: 100 queries/day
+Scheduler: fires every 5 minutes = 288 runs/day
+GOOGLE_SEARCH_MAX_PER_RUN = 10
+
+Worst case per-run quota spend: 10 queries
+Worst case total daily spend:   10 × 288 = 2880 queries
+
+BUT: each article is searched exactly once.
+So actual daily spend = number of NEW articles passing AI filter that day.
+A typical news day: ~20–50 new crime articles.
+Actual quota spend: ~20–50 queries/day — well under 100.
+```
+
+The `GOOGLE_SEARCH_MAX_PER_RUN=10` cap is a *safety guard* — it limits damage if the DB
+somehow accumulates thousands of unsearched articles (e.g. after a long downtime).
+
+### Setup: enabling Google Search enrichment
+
+1. Go to `programmablesearchengine.google.com` → create a Custom Search Engine.
+   Set it to search the entire web.
+2. Go to Google Cloud Console → enable the **Custom Search JSON API**.
+3. Create an API key.
+4. Add to `.env`:
    ```env
    GOOGLE_SEARCH_API_KEY=AIzaSy...
    GOOGLE_SEARCH_ENGINE_ID=abc123...
-   GOOGLE_SEARCH_RESULTS_PER_ARTICLE=3   # optional, default 3
-   GOOGLE_SEARCH_DELAY_SECONDS=1.0        # optional, default 1s
+   # Optional tuning:
+   GOOGLE_SEARCH_RESULTS_PER_ARTICLE=3    # URLs per article (max 10 per API call)
+   GOOGLE_SEARCH_DELAY_SECONDS=1.0        # Seconds between sequential requests
+   GOOGLE_SEARCH_MAX_PER_RUN=10           # Max articles per scheduler run (quota guard)
    ```
 
-### Quota management
+> If these env vars are not set, the app works normally — articles just have no `reference_urls`.
+> The feature degrades gracefully.
 
-- Free tier: 100 queries/day.
-- Each `POST /final-articles/publish` with `top_n=20` sends at most 20 queries (once per article).
-- Articles already enriched (non-null `reference_urls`) are skipped on future cycles.
-- `GOOGLE_SEARCH_DELAY_SECONDS=1.0` — 1-second gap between requests.
-- If either env var is missing, the entire feature is silently skipped — app works without it.
+### Triggering enrichment manually
 
-### Flow
-
-```
-PublishingService.publish()
-  → finds rows with reference_urls = None
-  → google_search_service.enrich_articles_with_reference_urls(needs_search)
-      for each article (sequentially):
-        fetch_related_urls(article["title"])
-          httpx GET /customsearch/v1?q=title&num=3&key=...&cx=...
-          → extract item["link"] from response["items"]
-          → return list of URLs (or [] on error)
-        article["reference_urls"] = urls
-        sleep(GOOGLE_SEARCH_DELAY_SECONDS)
-  → post_processed_repo.update_reference_urls(id, urls)  ← cached permanently
-  → final_article_repo.upsert_batch()  ← written to public feed
-```
-
-### Manual trigger
-
-To force enrichment immediately (without waiting for scheduler):
+Enrichment runs automatically after every successful ingest. To trigger it manually:
 
 ```bash
+# Triggers ingest → enrich → publish immediately:
+curl -X POST http://localhost:8000/ingest/ \
+  -H "Content-Type: application/json" \
+  -d '{"source_id": 1}'
+# Check logs for: "SearchEnrichmentService: N article(s) need enrichment"
+
+# Triggers publish only (reads already-enriched data, no new Google calls):
 curl -X POST "http://localhost:8000/final-articles/publish?top_n=20"
-# Logs will show: "fetching reference_urls for N articles via Google Search"
 ```
 
 ---
 
-## 10. Request Flows — End to End
+## 11. Scheduler Design — Why 3 Steps, Not 3 Jobs
+
+### What changed and why
+
+An earlier design had three separate APScheduler jobs:
+1. Ingestion job — every 5 minutes
+2. Search enrichment job — every 5 minutes (offset)
+3. Publishing job — every 5 minutes (further offset)
+
+**Problem with 3 separate jobs:** They run on fixed timers, so:
+- Ingestion might finish early, but enrichment waits for its timer to fire.
+- Enrichment timer might fire before ingestion completes — enriching nothing new.
+- The feed could be 10+ minutes stale after a batch of new articles arrives.
+- Harder to reason about ordering guarantees.
+
+### Current design: 2 jobs + 1 inline call
+
+```
+APScheduler job 1: run_ingestion_for_all_active_sources()
+  │
+  │  [ingestion completes]
+  │
+  ├── if any new articles:
+  │     await run_search_enrichment()   ← not a job, an inline async call
+  │     await run_publishing()          ← not a job, an inline async call
+  │
+  └── return
+
+APScheduler job 2: run_publishing()   ← catches up if ingestion didn't run recently
+  (fires every PUBLISH_INTERVAL_MINUTES + PUBLISH_OFFSET_SECONDS)
+```
+
+**Why this is better:**
+- **Guaranteed ordering:** Enrichment always runs after ingestion, publishing always runs
+  after enrichment. No race conditions.
+- **Immediate feedback:** New articles appear in the feed seconds after ingestion completes —
+  not after waiting for a separate timer.
+- **Simpler mental model:** The scheduler has 2 jobs, not 3. The chain logic lives entirely
+  in `run_ingestion_for_all_active_sources()`.
+- **The extra publishing job** (Job 2) still exists as a safety net — in case no new
+  articles came in, articles still get re-ranked periodically (their `rank_score` changes
+  as they age).
+
+### `max_instances=1` explained
+
+Both APScheduler jobs have `max_instances=1`. This means:
+- If a job is still running when its next scheduled fire time arrives, the new run is
+  **skipped** entirely.
+- This prevents two overlapping ingest runs from calling the AI twice for the same articles.
+- Without this, a slow AI response could cause exponentially overlapping runs.
+
+### Visual timeline
+
+```
+Time →    0m          5m           10m         15m
+          │           │            │           │
+          ▼           ▼            ▼           ▼
+Job 1:  [ingest+enrich+publish]  [ingest+enrich+publish]
+Job 2:              [publish]                 [publish]
+          ↑ 0s offset  ↑ +30s offset
+```
+
+Job 2 fires 30 seconds after Job 1 in each cycle. If Job 1 published already, Job 2
+is a fast no-op (nothing changed). If Job 1 is still running, Job 2's `run_publishing()`
+uses whatever is in the DB at that moment.
+
+---
+
+## 12. Request Flows — End to End
 
 ### `POST /ingest/` — Manual pipeline trigger
 
 ```
 POST /ingest/ {"source_id": 2}
-  → source_repo.get_by_id(2)   → validate type
-  → IngestionService.ingest(source)   [same as automated §7]
+  → source_repo.get_by_id(2)   → validate source exists and type is rss/rest
+  → IngestionService.ingest(source)   [same 13 steps as automated run in §8]
   → return {"source_id": 2, "source_type": "rss", "ingested": 5}
 ```
 
-### `POST /final-articles/publish` — Manual publish + enrichment
+Note: the manual `/ingest/` endpoint calls `IngestionService.ingest()` directly — it does NOT
+automatically trigger search enrichment or publishing. Use the scheduler (or wait for the
+automated cycle) for the full ingest → enrich → publish chain.
+
+### `POST /final-articles/publish` — Manual publish (no Google Search)
 
 ```
 POST /final-articles/publish?top_n=20
   → PublishingService.publish(top_n=20)
       → get_top_by_imp_score(20)
       → compute rank_score for each
-      → Google Search enrichment for articles without reference_urls
+      → reference_urls read from DB (already enriched — no Google API call)
       → upsert_batch()
   → return {"published": 20, "top_n": 20}
 ```
+
+> To also run search enrichment manually, trigger ingestion via `POST /ingest/`.
+> The scheduler chains enrichment automatically after each successful ingest.
 
 ### `GET /final-articles/` — Public ranked feed
 
@@ -1111,7 +1388,7 @@ GET /raw-ingestion/?status=filtered_out&source_id=1&limit=50
   → return RawIngestionListResponse(total=N, items=[...])
 ```
 
-### `PATCH /ai-providers/{id}/activate` — Switch provider
+### `PATCH /ai-providers/{id}/activate` — Switch AI provider
 
 ```
 PATCH /ai-providers/3/activate
@@ -1121,21 +1398,21 @@ PATCH /ai-providers/3/activate
 
 Next ingest run:
   → ai_provider_repo.get_active()  → config row (id=3)
-  → create_from_config(config)     → cache miss → new provider client
-  → articles now processed by the new model
+  → create_from_config(config)     → cache miss → new SDK client created
+  → all articles now processed by the new model
 ```
 
 ---
 
-## 11. API Reference
+## 13. API Reference
 
 ### Public — Ranked Feed (`/final-articles/`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/final-articles/` | Ranked crime news feed (frontend primary endpoint) |
+| GET | `/final-articles/` | Ranked crime news feed (primary frontend endpoint) |
 | GET | `/final-articles/{id}` | Single article by ID |
-| POST | `/final-articles/publish` | Force-refresh ranking + Google Search enrichment |
+| POST | `/final-articles/publish` | Force-refresh ranking (reads DB data — no Google Search) |
 
 **GET `/final-articles/` query params:**
 
@@ -1143,7 +1420,7 @@ Next ingest run:
 |-------|---------|-------------|
 | `limit` | 20 | Articles per page (max 100) |
 | `offset` | 0 | Pagination offset |
-| `sub_category_id` | — | Filter by crime sub-type ID |
+| `sub_category_id` | — | Filter by crime sub-type ID (from `/master/sub-categories`) |
 | `q` | — | Keyword search in title + description |
 
 ---
@@ -1156,15 +1433,15 @@ Next ingest run:
 | GET | `/raw-ingestion/{id}` | Single raw row with full `raw_payload` JSON |
 | GET | `/filter-articles/` | Stage-1 AI-confirmed crime articles |
 | GET | `/filter-articles/{id}` | |
-| GET | `/post-processed/` | Stage-2 enriched articles (with `reference_urls`) |
+| GET | `/post-processed/` | Stage-2 enriched articles (with `imp_score` + `reference_urls`) |
 | GET | `/post-processed/{id}` | |
 
 **GET `/raw-ingestion/` query params:**
 
 | Param | Description |
 |-------|-------------|
-| `status` | Filter: `pending` \| `filtered` \| `processed` \| `filtered_out` \| `failed` |
-| `source_id` | Filter by source |
+| `status` | `pending` \| `filtered` \| `processed` \| `filtered_out` \| `failed` |
+| `source_id` | Filter by source ID |
 | `limit` / `offset` | Pagination |
 
 ---
@@ -1173,10 +1450,10 @@ Next ingest run:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/sources/` | List sources (`?include_inactive=true`) |
+| GET | `/sources/` | List sources (`?include_inactive=true` to show paused) |
 | POST | `/sources/` | Add new RSS or REST source |
 | GET | `/sources/{id}` | Get by ID |
-| PATCH | `/sources/{id}` | Update (pause: `{"is_active": false}`) |
+| PATCH | `/sources/{id}` | Update — pause with `{"is_active": false}` |
 | DELETE | `/sources/{id}` | Delete permanently |
 
 ---
@@ -1194,21 +1471,21 @@ Next ingest run:
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/ai-providers/` | List all registered providers |
-| POST | `/ai-providers/` | Register new provider |
+| POST | `/ai-providers/` | Register new provider config |
 | GET | `/ai-providers/active` | Currently active provider |
 | GET | `/ai-providers/{id}` | Get by ID |
-| PATCH | `/ai-providers/{id}/activate` | Switch active provider |
-| DELETE | `/ai-providers/active` | Deactivate all (fall back to .env) |
+| PATCH | `/ai-providers/{id}/activate` | Switch to this provider (takes effect next run) |
+| DELETE | `/ai-providers/active` | Deactivate all (fall back to .env keys) |
 | DELETE | `/ai-providers/{id}` | Delete a config |
 
 **POST `/ai-providers/` body examples:**
 
 ```json
-// Ollama (local, no key)
+// Ollama (local GPU, no API key needed)
 {"name": "Ollama Qwen3", "provider": "ollama",
  "model": "dengcao/Qwen3-30B-A3B-Instruct-2507:latest"}
 
-// Gemini Multimodal (recommended cloud)
+// Gemini Multimodal (recommended cloud — structured output)
 {"name": "Gemini Flash", "provider": "gemini_multimodal",
  "model": "gemini-2.0-flash", "api_key": "AIzaSy..."}
 
@@ -1220,7 +1497,7 @@ Next ingest run:
 {"name": "GPT-4o Mini", "provider": "openai",
  "model": "gpt-4o-mini", "api_key": "sk-..."}
 
-// Custom OpenAI-compatible (base_url required)
+// Custom OpenAI-compatible server (vLLM, LM Studio, remote Ollama)
 {"name": "Remote vLLM", "provider": "custom",
  "model": "mistral-7b", "api_key": "none",
  "base_url": "http://192.168.1.10:8080/v1"}
@@ -1232,9 +1509,9 @@ Next ingest run:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/master/categories` | 8 crime categories |
+| GET | `/master/categories` | 8 crime categories (for filter UI) |
 | GET | `/master/sub-categories` | 10 crime sub-categories |
-| GET | `/master/states` | 36 Indian states/UTs |
+| GET | `/master/states` | 36 Indian states/UTs (for location filter) |
 
 ---
 
@@ -1243,68 +1520,104 @@ Next ingest run:
 | Method | Path | Response |
 |--------|------|----------|
 | GET | `/health` | `{"status": "ok"}` |
-| GET | `/` | Redirect info to `/docs` |
+| GET | `/` | Info page with link to `/docs` |
 
 ---
 
-## 12. Configuration Reference
+## 14. Configuration Reference
 
-All settings loaded from `.env` via `app/core/config.py`.
+All settings are loaded from `.env` via `app/core/config.py` (Pydantic Settings).
+
+### Database
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | **required** | Must be `postgresql+asyncpg://...` |
-| `OLLAMA_MODEL` | None | Enables Ollama env-fallback |
-| `OLLAMA_URL` | `http://localhost:11434/v1` | Ollama endpoint |
-| `OLLAMA_REQUESTS_PER_MINUTE` | 60 | RPM for local Ollama |
-| `OLLAMA_MAX_ITEMS_PER_RUN` | 50 | Items per ingest run for Ollama |
-| `OLLAMA_CONCURRENCY` | 1 | Parallel GPU inferences (1 = no queuing) |
-| `OLLAMA_BATCH_SIZE` | 10 | Articles per GPU batch |
-| `OLLAMA_BATCH_COOLDOWN_SECONDS` | 15.0 | GPU rest between batches |
+| `DATABASE_URL` | **required** | Must be `postgresql+asyncpg://...` (async driver) |
+
+### AI Provider — Ollama (local)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OLLAMA_MODEL` | None | Set this to use Ollama as the env-fallback provider |
+| `OLLAMA_URL` | `http://localhost:11434/v1` | Ollama API endpoint |
+| `OLLAMA_REQUESTS_PER_MINUTE` | 60 | RPM (local = no real limit; set high) |
+| `OLLAMA_MAX_ITEMS_PER_RUN` | 50 | Articles processed per ingest run |
+| `OLLAMA_CONCURRENCY` | 1 | Parallel GPU inferences (1 = no queuing; single GPU) |
+| `OLLAMA_BATCH_SIZE` | 10 | Articles per GPU batch before cooldown |
+| `OLLAMA_BATCH_COOLDOWN_SECONDS` | 15.0 | GPU rest pause between batches |
+
+### AI Provider — Cloud APIs
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `GEMINI_API_KEY` | None | Enables Gemini env-fallback |
 | `ANTHROPIC_API_KEY` | None | Enables Anthropic env-fallback |
-| `CLOUD_REQUESTS_PER_MINUTE` | 3 | RPM for cloud APIs (free-tier safe) |
-| `CLOUD_MAX_ITEMS_PER_RUN` | 5 | Items per ingest run for cloud |
-| `AI_REQUESTS_PER_MINUTE` | 5 | Fallback RPM |
-| `AI_MAX_ITEMS_PER_RUN` | 10 | Fallback item cap |
+| `CLOUD_REQUESTS_PER_MINUTE` | 3 | RPM for cloud providers (conservative free-tier default) |
+| `CLOUD_MAX_ITEMS_PER_RUN` | 5 | Items per ingest run for cloud providers |
+| `AI_REQUESTS_PER_MINUTE` | 5 | Generic fallback RPM |
+| `AI_MAX_ITEMS_PER_RUN` | 10 | Generic fallback item cap |
 | `AI_RETRY_ATTEMPTS` | 3 | Retries on rate-limit errors |
-| `AI_RETRY_DELAY_SECONDS` | 15.0 | Base back-off delay |
-| `INGEST_INTERVAL_MINUTES` | 5 | Ingestion scheduler interval |
-| `PUBLISH_INTERVAL_MINUTES` | 5 | Publishing scheduler interval |
-| `PUBLISH_OFFSET_SECONDS` | 30 | Publishing job offset after ingestion |
-| `FEED_TOP_N` | 20 | Articles per publish cycle |
-| `DECAY_FRESH` | 1.00 | Time-decay: < 6 hours |
-| `DECAY_RECENT` | 0.75 | Time-decay: 6–24 hours |
-| `DECAY_DAY` | 0.50 | Time-decay: 1–3 days |
-| `DECAY_WEEK` | 0.25 | Time-decay: 3–7 days |
-| `DECAY_OLD` | 0.10 | Time-decay: > 7 days |
-| `GOOGLE_SEARCH_API_KEY` | None | Google Custom Search key (optional) |
-| `GOOGLE_SEARCH_ENGINE_ID` | None | Google CSE ID (optional) |
-| `GOOGLE_SEARCH_RESULTS_PER_ARTICLE` | 3 | URLs per article (max 10 per API call) |
-| `GOOGLE_SEARCH_DELAY_SECONDS` | 1.0 | Delay between search requests |
+| `AI_RETRY_DELAY_SECONDS` | 15.0 | Base back-off delay for retries |
+
+### Google Search Enrichment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GOOGLE_SEARCH_API_KEY` | None | Google Cloud API key (optional — app works without it) |
+| `GOOGLE_SEARCH_ENGINE_ID` | None | Programmable Search Engine ID |
+| `GOOGLE_SEARCH_RESULTS_PER_ARTICLE` | 3 | Reference URLs per article (max 10) |
+| `GOOGLE_SEARCH_DELAY_SECONDS` | 1.0 | Seconds between sequential search requests |
+| `GOOGLE_SEARCH_MAX_PER_RUN` | 10 | Max articles searched per scheduler run (quota guard) |
+
+### Scheduler
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `INGEST_INTERVAL_MINUTES` | 5 | How often the ingestion job fires |
+| `PUBLISH_INTERVAL_MINUTES` | 5 | How often the standalone publish job fires |
+| `PUBLISH_OFFSET_SECONDS` | 30 | Delay offset for publish job (runs 30s after ingest) |
+| `FEED_TOP_N` | 20 | Number of articles in the published feed |
+
+### Time-Decay Scoring
+
+| Variable | Default | Age bracket |
+|----------|---------|-------------|
+| `DECAY_FRESH` | 1.00 | Under 6 hours |
+| `DECAY_RECENT` | 0.75 | 6–24 hours |
+| `DECAY_DAY` | 0.50 | 1–3 days |
+| `DECAY_WEEK` | 0.25 | 3–7 days |
+| `DECAY_OLD` | 0.10 | Over 7 days |
+
+### Misc
+
+| Variable | Default | Description |
+|----------|---------|-------------|
 | `DEBUG` | False | FastAPI debug mode |
 
-**Recommended `.env` for local Ollama:**
+### Recommended `.env` templates
 
+**Local Ollama (GPU, no cloud costs):**
 ```env
 DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db_news
 OLLAMA_MODEL=dengcao/Qwen3-30B-A3B-Instruct-2507:latest
+# Optional: Google Search for reference URLs
 GOOGLE_SEARCH_API_KEY=AIzaSy...
 GOOGLE_SEARCH_ENGINE_ID=abc123...
 ```
 
-**Recommended `.env` for Gemini free tier:**
-
+**Gemini free tier:**
 ```env
 DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/db_news
 GEMINI_API_KEY=AIzaSy...
+CLOUD_MAX_ITEMS_PER_RUN=5        # conservative to stay within free quota
+CLOUD_REQUESTS_PER_MINUTE=3
 GOOGLE_SEARCH_API_KEY=AIzaSy...
 GOOGLE_SEARCH_ENGINE_ID=abc123...
 ```
 
 ---
 
-## 13. Adding a New AI Provider
+## 15. Adding a New AI Provider
 
 **4 files to touch — nothing else.**
 
@@ -1321,38 +1634,42 @@ from app.services.normalization.providers.base import (
 class YourProvider(AIProvider):
     def __init__(self, api_key: str, model: str) -> None:
         self._model = model
-        # init your SDK client here
+        # Initialise your SDK client here (e.g. your_sdk.AsyncClient(api_key))
 
     @property
     def model_id(self) -> str:
+        # This string is stored in raw_ingestion.normalized_by for the audit trail
         return f"ai:your_provider:{self._model}"
 
     async def process(self, raw_payload: dict, source_type: str) -> dict | None:
+        # 1. Build the user message (serialises the raw article dict for the AI)
         user_msg = build_process_message(raw_payload, source_type)
-        # call your API with SINGLE_PROCESS_PROMPT as system + user_msg as user
-        text = ...   # raw text from your API
+        # 2. Call your API with SINGLE_PROCESS_PROMPT as system + user_msg as user
+        text = ...   # raw text response from your API
+        # 3. Parse, validate, and return the structured result (or None on failure)
         return parse_single_output(text, raw_payload)
 ```
 
 ### Step 2 — Register in the factory
 
-`app/services/normalization/provider_factory.py` — add to `_build()`:
+`app/services/normalization/provider_factory.py` — add a branch to `_build()`:
 
 ```python
 from app.services.normalization.providers.your_prov import YourProvider
 
+# inside _build():
 if provider == "your_provider":
     return YourProvider(api_key=api_key, model=model)
 ```
 
-### Step 3 — Add to model constants
+### Step 3 — Add metadata constants
 
 `app/models/ai_provider.py`:
 
 ```python
 SUPPORTED_PROVIDERS = {..., "your_provider"}
-PROVIDER_BASE_URLS["your_provider"] = None
-PROVIDER_DEFAULT_MODELS["your_provider"] = "your-default-model"
+PROVIDER_BASE_URLS["your_provider"] = None          # or a default base URL
+PROVIDER_DEFAULT_MODELS["your_provider"] = "your-default-model-name"
 ```
 
 ### Step 4 — Add to schema Literal
@@ -1366,9 +1683,19 @@ _PROVIDER_LITERAL = Literal[..., "your_provider"]
 ### Test it
 
 ```bash
+# Register the provider
 curl -X POST http://localhost:8000/ai-providers/ \
+  -H "Content-Type: application/json" \
   -d '{"name": "My Provider", "provider": "your_provider",
-       "model": "your-model", "api_key": "key"}'
+       "model": "your-model", "api_key": "your-key"}'
+
+# Activate it (takes effect on next ingest run)
 curl -X PATCH http://localhost:8000/ai-providers/{id}/activate
-curl -X POST http://localhost:8000/ingest/ -d '{"source_id": 1}'
+
+# Trigger a test ingest run
+curl -X POST http://localhost:8000/ingest/ \
+  -H "Content-Type: application/json" \
+  -d '{"source_id": 1}'
+
+# Verify in the logs: look for "normalized_by": "ai:your_provider:your-model"
 ```

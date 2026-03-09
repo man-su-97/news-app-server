@@ -36,7 +36,8 @@ An automated backend that:
 - Pulls crime news articles from **RSS feeds** and **REST APIs** on a 5-minute schedule
 - Runs every article through a **two-stage AI pipeline**:
   - **Stage 1 — Filter**: classifies crime type, extracts structured fields, resolves location
-  - **Stage 2 — Post-process**: rewrites title/description in original language, scores importance 1–100, discovers reference URLs via web search
+  - **Stage 2 — Post-process**: rewrites title/description in original language, scores importance 1–100
+- After AI processing, runs **Google Search enrichment** (once per article) to fetch 3 related reference URLs per article, stored permanently in the DB
 - Ranks and publishes the **top N articles** into a curated feed using importance score × time-decay
 - Exposes a clean **REST API** for a frontend to consume
 
@@ -129,9 +130,10 @@ news_app_backend/
     │   └── master_data_schema.py           # Category, SubCategory, State responses
     │
     ├── services/
-    │   ├── scheduler.py                    # APScheduler: ingestion every 5min, publish every 5min
+    │   ├── scheduler.py                    # APScheduler: ingest → enrich → publish
     │   ├── ingestion_service.py            # Orchestrates the full two-stage pipeline
-    │   ├── publishing_service.py           # Ranks articles and writes final_articles feed
+    │   ├── search_enrichment_service.py    # Google Search enrichment — once per article, idempotent
+    │   ├── publishing_service.py           # Ranks articles and writes final_articles feed (no Google calls)
     │   ├── source_normalizer.py            # Coerces raw feedparser/REST dicts to plain Python
     │   ├── fetchers/
     │   │   ├── rss_fetcher.py              # feedparser-based RSS/Atom fetcher
@@ -231,7 +233,11 @@ class Settings(BaseSettings):
     PUBLISH_INTERVAL_MINUTES: int = 5
     PUBLISH_OFFSET_SECONDS: int = 30   # delay publish job after ingest
     FEED_TOP_N: int = 20
-    DUCKDUCKGO_TIMEOUT_SECONDS: float = 10.0
+    GOOGLE_SEARCH_API_KEY: str | None = None
+    GOOGLE_SEARCH_ENGINE_ID: str | None = None
+    GOOGLE_SEARCH_RESULTS_PER_ARTICLE: int = 3
+    GOOGLE_SEARCH_DELAY_SECONDS: float = 1.0
+    GOOGLE_SEARCH_MAX_PER_RUN: int = 10
     DECAY_FRESH: float = 1.00          # < 6h
     DECAY_RECENT: float = 0.75         # 6–24h
     DECAY_DAY: float = 0.50            # 1–3d
@@ -410,7 +416,7 @@ Seeded with India + 36 states/UTs. `LocationResolver` loads the state table at t
 
 #### `post_processed_article.py` → `post_processed_articles`
 
-**Stage 2 AI output.** Rewritten, scored, reference-enriched version.
+**Stage 2 AI output.** Rewritten and scored. Reference URLs are added by `SearchEnrichmentService` after AI processing.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -419,7 +425,7 @@ Seeded with India + 36 states/UTs. `LocationResolver` loads the state table at t
 | `title` | VARCHAR | AI-rewritten headline |
 | `description` | TEXT | AI-rewritten ~100 word summary |
 | `image_url` | VARCHAR | |
-| `reference_urls` | TEXT[] | Up to 5 related article URLs found via DuckDuckGo |
+| `reference_urls` | TEXT[] | Related article URLs from Google Search. `NULL` = not yet searched; `[]` = searched, no results; `[url,…]` = enriched |
 | `published_at` | TIMESTAMPTZ | |
 | `created_at` | TIMESTAMPTZ | |
 | `sub_category_id` | INTEGER FK → master_sub_category | Single best-match sub-category |
@@ -809,18 +815,37 @@ A process-level singleton `_RateLimiter` and `asyncio.Semaphore` are shared acro
 
 **Retry logic:** On HTTP 429 / quota exhausted responses, retries up to `AI_RETRY_ATTEMPTS` times with exponential backoff (`delay × 2^attempt`).
 
-**DuckDuckGo timeout:** Wrapped in `asyncio.wait_for(timeout=settings.DUCKDUCKGO_TIMEOUT_SECONDS)`. If search hangs, it is cancelled and the article proceeds without reference URLs (non-fatal).
+**Reference URL enrichment** is handled separately by `SearchEnrichmentService` after AI processing completes — not inside the AI pipeline itself.
+
+---
+
+#### `search_enrichment_service.py` — `SearchEnrichmentService`
+
+Populates `reference_urls` on `post_processed_articles` via Google Custom Search. Called
+once after ingestion, before publishing.
+
+**`enrich()` logic:**
+1. `post_processed_repo.get_without_reference_urls(limit=GOOGLE_SEARCH_MAX_PER_RUN)` — `WHERE reference_urls IS NULL`, ordered by `imp_score DESC`.
+2. For each article: `google_search_service.fetch_related_urls(title)`.
+   - URLs found → `update_reference_urls(id, urls)` — row now has `[url1, …]`.
+   - No URLs → `mark_reference_urls_searched(id)` — row now has `[]` (sentinel).
+3. `asyncio.sleep(GOOGLE_SEARCH_DELAY_SECONDS)` between every request.
+
+Once stored, an article is **never searched again** — the `IS NULL` gate excludes both
+`[]` and populated arrays from future runs.
 
 ---
 
 #### `publishing_service.py` — `PublishingService`
 
 Selects top N post-processed articles and writes the ranked public feed.
+**Does not call Google Search** — reads `reference_urls` from the DB as enriched upstream.
 
 **`publish(top_n=20)`:**
-1. `post_processed_repo.get_all(...)` ordered by `imp_score DESC WHERE imp_score IS NOT NULL` — uses partial index
-2. For each article: `rank_score = imp_score × _time_decay_factor(published_at)`
-3. `final_article_repo.upsert_batch(ranked_articles)`
+1. `post_processed_repo.get_top_by_imp_score(limit=top_n)` — ordered by `imp_score DESC WHERE imp_score IS NOT NULL`.
+2. For each article: `rank_score = imp_score × _time_decay_factor(published_at)`.
+   `reference_urls` read directly from the already-enriched DB row.
+3. `final_article_repo.upsert_batch(ranked_articles)`.
 
 **Time decay factors** (from `settings`):
 
@@ -840,8 +865,14 @@ Two APScheduler jobs registered on `AsyncIOScheduler`:
 
 | Job | Trigger | What it does |
 |-----|---------|-------------|
-| `ingestion_all_sources` | Every `INGEST_INTERVAL_MINUTES` | Loads active sources, runs `IngestionService.ingest()` for each concurrently via `asyncio.gather()` |
-| `publish_final_feed` | Every `PUBLISH_INTERVAL_MINUTES` + `PUBLISH_OFFSET_SECONDS` | Runs `PublishingService.publish(top_n=FEED_TOP_N)` |
+| `ingestion_all_sources` | Every `INGEST_INTERVAL_MINUTES` | Loads active sources, runs `IngestionService.ingest()` for each concurrently. On success, immediately calls `run_search_enrichment()` then `run_publishing()`. |
+| `publish_final_feed` | Every `PUBLISH_INTERVAL_MINUTES` + `PUBLISH_OFFSET_SECONDS` | Runs `PublishingService.publish(top_n=FEED_TOP_N)` — uses already-enriched data, no Google calls. |
+
+After a successful ingestion batch the inline sequence is:
+```
+ingestion → SearchEnrichmentService.enrich() → PublishingService.publish()
+```
+This ensures enrichment data is always available before ranking runs, without adding a third APScheduler job.
 
 Each source gets its own `AsyncSession` to isolate DB transactions. `max_instances=1` prevents job pile-up if a previous run is still in progress.
 
@@ -990,18 +1021,33 @@ scheduler.py: run_ingestion_for_all_active_sources()
                 raw_ingestion_repo.mark_filtered / mark_filtered_out / mark_failed
 ```
 
-### Scheduled publishing (every 5 minutes + 30s offset)
+### Scheduled enrichment + publishing (triggered after ingestion)
 
 ```
+scheduler.py: run_search_enrichment()   ← called inline after ingestion
+  │
+  └── SearchEnrichmentService.enrich()
+        │
+        ├── post_processed_repo.get_without_reference_urls(limit=GOOGLE_SEARCH_MAX_PER_RUN)
+        │     WHERE reference_urls IS NULL   ← only articles never searched
+        │     ORDER BY imp_score DESC
+        │
+        └── for each article (sequential, throttled):
+              fetch_related_urls(title)
+              URLs found?  → update_reference_urls(id, urls)
+              No URLs?     → mark_reference_urls_searched(id)  [stores []]
+              sleep(GOOGLE_SEARCH_DELAY_SECONDS)
+
 scheduler.py: run_publishing()
   │
   └── PublishingService.publish(top_n=20)
         │
-        ├── post_processed_repo.get_all(ordered by imp_score DESC, NOT NULL)
+        ├── post_processed_repo.get_top_by_imp_score(limit=20)
         │     ← uses partial index: ix_post_processed_articles_imp_score_scored
         │
         ├── for each article:
         │     rank_score = imp_score × _time_decay_factor(published_at)
+        │     reference_urls read from DB (no Google call here)
         │
         └── final_article_repo.upsert_batch(ranked_articles)
               INSERT INTO final_articles ... ON CONFLICT (post_processed_article_id) DO UPDATE SET rank_score = ...
@@ -1154,13 +1200,17 @@ app startup (lifespan)
         ├── Job 1: ingestion_all_sources
         │     trigger: interval, every INGEST_INTERVAL_MINUTES minutes
         │     max_instances: 1  (no pile-up if previous run is still going)
+        │     on success → inline: run_search_enrichment() → run_publishing()
         │
         └── Job 2: publish_final_feed
               trigger: interval, every PUBLISH_INTERVAL_MINUTES minutes
                         + PUBLISH_OFFSET_SECONDS seconds delay
               max_instances: 1
-              (30s offset ensures Stage 2 data is written before ranking runs)
+              (standalone publish only — uses already-enriched DB data, no Google calls)
 ```
+
+Enrichment is **not** a separate APScheduler job. It is called inline by the ingestion job
+so it always runs between ingestion and publishing, in the correct order.
 
 ---
 
@@ -1184,7 +1234,12 @@ PUBLISH_INTERVAL_MINUTES=5
 PUBLISH_OFFSET_SECONDS=30
 FEED_TOP_N=20
 
-DUCKDUCKGO_TIMEOUT_SECONDS=10.0
+# Google Custom Search (optional — 100 queries/day free tier)
+# GOOGLE_SEARCH_API_KEY=AIzaSy...
+# GOOGLE_SEARCH_ENGINE_ID=abc123...
+GOOGLE_SEARCH_RESULTS_PER_ARTICLE=3   # URLs per article (max 10)
+GOOGLE_SEARCH_DELAY_SECONDS=1.0       # delay between requests
+GOOGLE_SEARCH_MAX_PER_RUN=10          # quota guard: max articles searched per scheduler run
 
 DECAY_FRESH=1.00    # < 6h
 DECAY_RECENT=0.75   # 6–24h

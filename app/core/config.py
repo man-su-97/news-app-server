@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     GOOGLE_SEARCH_RESULTS_PER_ARTICLE: int = 3
     # Delay between consecutive Google Search requests to protect free-tier quota
     GOOGLE_SEARCH_DELAY_SECONDS: float = 1.0
+    # Max articles to search per scheduler run (quota guard: 100 queries/day free tier).
+    # Default 10 → at most 10 × 288 runs/day quota spend, but each article is only
+    # searched once, so real spend = number of distinct new articles, not run count.
+    GOOGLE_SEARCH_MAX_PER_RUN: int = 10
 
     model_config = SettingsConfigDict(
         env_file=".env", env_file_encoding="utf-8")

@@ -13,6 +13,7 @@ from app.repositories.raw_ingestion_repo import RawIngestionRepository
 from app.repositories.source_repo import SourceRepository
 from app.services.ingestion_service import IngestionService
 from app.services.publishing_service import PublishingService
+from app.services.search_enrichment_service import SearchEnrichmentService
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,9 @@ async def run_ingestion_for_all_active_sources() -> None:
     )
 
     if ok > 0:
-        logger.info("Triggering publish after ingestion completed")
+        logger.info("Triggering search enrichment after ingestion completed")
+        await run_search_enrichment()
+        logger.info("Triggering publish after enrichment completed")
         await run_publishing()
 
 
@@ -69,6 +72,16 @@ async def _ingest_one_source(source) -> int:
             count, source.id, source.name,
         )
         return count
+
+
+async def run_search_enrichment() -> None:
+    logger.info("Scheduled search enrichment run starting")
+    async with AsyncSessionLocal() as db:
+        svc = SearchEnrichmentService(
+            post_processed_repo=PostProcessedArticleRepository(db),
+        )
+        count = await svc.enrich()
+    logger.info("Scheduled search enrichment complete: %d article(s) enriched", count)
 
 
 async def run_publishing() -> None:
