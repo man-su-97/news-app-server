@@ -30,7 +30,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
-SUPPORTED_PROVIDERS = {"anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "ollama", "custom"}
+SUPPORTED_PROVIDERS = {"anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "ollama", "aws_bedrock", "custom"}
 
 
 PROVIDER_BASE_URLS: dict[str, str | None] = {
@@ -39,7 +39,8 @@ PROVIDER_BASE_URLS: dict[str, str | None] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "gemini_langgraph": None,                                   
     "gemini_multimodal": None,                                  
-    "ollama": "http://localhost:11434/v1",                      
+    "ollama": "http://localhost:11434/v1",
+    "aws_bedrock": None,                    
     "custom": None,                                             
 }
 
@@ -49,7 +50,8 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-2.0-flash",                                      
     "gemini_langgraph": "gemini-2.0-flash",                            
     "gemini_multimodal": "gemini-2.0-flash",                           
-    "ollama": "dengcao/Qwen3-30B-A3B-Instruct-2507:latest",            
+    "ollama": "dengcao/Qwen3-30B-A3B-Instruct-2507:latest", 
+    "aws_bedrock": "meta.llama3-8b-instruct-v1:0",           
     "custom": "your-model-name",                                       
 }
 

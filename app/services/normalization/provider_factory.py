@@ -30,6 +30,7 @@ from app.services.normalization.providers.anthropic_prov import AnthropicProvide
 from app.services.normalization.providers.gemini_langgraph_prov import GeminiLangGraphProvider
 from app.services.normalization.providers.gemini_multimodal_prov import GeminiMultimodalLangGraphProvider
 from app.services.normalization.providers.openai_prov import OpenAICompatibleProvider
+from app.services.normalization.providers.aws_bedrock_prov import BedrockProvider
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,9 @@ def _build(config: AIProviderConfig) -> AIProvider:
         return OpenAICompatibleProvider(
             api_key=api_key or "ollama", model=model, base_url=base_url
         )
+    
+    if provider == "aws_bedrock":
+        return BedrockProvider(model=model)
 
     if provider in ("openai", "gemini", "custom"):
         return OpenAICompatibleProvider(api_key=api_key, model=model, base_url=base_url)

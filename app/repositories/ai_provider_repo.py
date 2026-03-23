@@ -117,6 +117,12 @@ class AIProviderRepository:
             .values(is_active=True)
         )
 
+        # Step 3: Commit the transaction
+        await self.db.commit()
+
+        # Step 4: Refresh the ORM object to get the new state
+        await self.db.refresh(target)
+
         return target
 
     async def deactivate_all(self) -> None:

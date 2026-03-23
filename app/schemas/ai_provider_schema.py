@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.models.ai_provider import PROVIDER_DEFAULT_MODELS, SUPPORTED_PROVIDERS
 
 _PROVIDER_LITERAL = Literal[
-    "anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "ollama", "custom"
+    "anthropic", "openai", "gemini", "gemini_langgraph", "gemini_multimodal", "ollama", "aws_bedrock", "custom"
 ]
 
 
