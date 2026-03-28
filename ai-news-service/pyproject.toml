@@ -1,5 +1,5 @@
 [project]
-name = "news-app-backend"
+name = "ai-news-service"
 version = "0.1.0"
 description = "A backend application for fetching and serving news articles."
 readme = "README.md"

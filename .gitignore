@@ -12,3 +12,6 @@ wheels/
 .env.*
 venv/
 .claude/
+
+# Editor ignore folder
+.vscode/
