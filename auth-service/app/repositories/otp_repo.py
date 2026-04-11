@@ -69,3 +69,20 @@ class OTPRepository:
       logger.exception(f"AN UNEXPECTED BUG OCCURRED in mark_otp_used!\n\n{e}")
       self.db.rollback()
       raise
+
+  async def get_latest_otp(self, user_id: int, otp_type: OTPType):
+    try:
+      result = await self.db.execute(
+        select(OTP).where(
+          OTP.user_id == user_id,
+          OTP.otp_type == otp_type
+        ).order_by(OTP.created_at.desc())
+      )
+      return result.scalar_one_or_none()
+    except SQLAlchemyError:
+      logger.exception("Database error occurred while fetching latest otp.")
+      raise
+    except Exception as e:
+      logger.exception(f"AN UNEXPECTED BUG OCCURRED in get_latest_otp!\n\n{e}")
+      self.db.rollback()
+      raise

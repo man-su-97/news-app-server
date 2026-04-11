@@ -12,6 +12,8 @@ class Settings(BaseSettings):
   ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
   REFRESH_TOKEN_EXPIRE_DAYS: int = 7
 
+  RESEND_COOL_DOWN_SECONDS: int = 60
+
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

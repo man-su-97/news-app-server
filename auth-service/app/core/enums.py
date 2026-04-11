@@ -8,6 +8,7 @@ class UserStatus(str, Enum):
     INACTIVE = "inactive"
     SUSPENDED = "suspended"
     DELETED = "deleted"
+    PENDING = "pending"
 
 
 class UserRole(str, Enum):

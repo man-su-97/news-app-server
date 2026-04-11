@@ -40,7 +40,7 @@ class User(Base, TimestampMixin):
 
     status: Mapped[UserStatus] = mapped_column(
         Enum(UserStatus),
-        default=UserStatus.ACTIVE
+        default=UserStatus.PENDING
     )
 
     # relationships
