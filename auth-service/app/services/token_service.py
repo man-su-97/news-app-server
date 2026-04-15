@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.refresh_token_repo import RefreshTokenRepository
+from app.repositories.user_repo import UserRepository
 from app.core.security import (
   create_access_token,
   create_refresh_token
@@ -14,6 +16,7 @@ class TokenService:
 
   def __init__(self, db: AsyncSession):
     self.refresh_repo = RefreshTokenRepository(db)
+    self.user_repo = UserRepository(db)
 
 
   async def generate_tokens(
@@ -39,8 +42,19 @@ class TokenService:
   ):
     token_obj = await self.refresh_repo.get_refresh_token(refresh_token)
     if not token_obj:
-        return None
-    return create_access_token(token_obj.user_id)
+      raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail={"message":"Invalid refresh token"}
+      )
+    
+    user_obj = await self.user_repo.get_by_id(token_obj.user_id)
+    if not user_obj:
+      raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail={"message":"User not found"}
+      )
+    
+    return create_access_token(user=user_obj)
 
 
   async def revoke_refresh_token(

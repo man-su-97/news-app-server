@@ -14,6 +14,10 @@ class Settings(BaseSettings):
 
   RESEND_COOL_DOWN_SECONDS: int = 60
 
+  # For sending emails to users
+  SENDER_EMAIL: str
+  SENDER_PASSWORD: str
+
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

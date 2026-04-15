@@ -76,7 +76,7 @@ class OTPRepository:
         select(OTP).where(
           OTP.user_id == user_id,
           OTP.otp_type == otp_type
-        ).order_by(OTP.created_at.desc())
+        ).order_by(OTP.created_at.desc()).limit(1)
       )
       return result.scalar_one_or_none()
     except SQLAlchemyError:

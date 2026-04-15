@@ -1,4 +1,5 @@
 import logging
+from fastapi import status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.repositories.user_repo import UserRepository
@@ -21,7 +22,12 @@ class UserService:
     existing_user = await self.user_repo.get_by_email(email)
 
     if existing_user:
-      raise ValueError("User already exists")
+      raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT, 
+        detail={
+          "message": "User already exists"
+          }
+        )
 
     user = await self.user_repo.create(
       email=email,

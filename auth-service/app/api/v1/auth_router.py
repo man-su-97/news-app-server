@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -19,16 +19,21 @@ router = APIRouter()
 @router.post("/register")
 async def register(
   data: RegisterRequest,
-  db: AsyncSession = Depends(get_db)
+  background_tasks: BackgroundTasks,
+  db: AsyncSession = Depends(get_db),
 ):
   service = AuthService(db)
-  await service.register(
+  result = await service.register(
     email=data.email,
     password=data.password,
     full_name=data.full_name,
-    role=data.role
+    role=data.role,
+    background_tasks=background_tasks
   )
-  return {"message": "OTP sent to email"}
+  return {
+    "user": result[0],
+    "message": "OTP sent to email"
+  }
 
 
 
@@ -46,7 +51,9 @@ async def verify_email(
     email=data.email,
     otp_code=data.otp_code
   )
-  return {"success": success}
+  if success:
+    return {"message": "Email verified"}
+  return {"message": "Invalid OTP"}
 
 
 
@@ -57,11 +64,13 @@ async def verify_email(
 @router.post("/resend-verification-otp")
 async def resend_verification_otp(
   data: ResendOTPRequest,
+  background_tasks: BackgroundTasks,
   db: AsyncSession = Depends(get_db)
 ):
   service = AuthService(db)
   await service.resend_verification_otp(
-    email=data.email
+    email=data.email,
+    background_tasks=background_tasks
   )
   return {"message": "OTP resent"}
 
@@ -71,24 +80,19 @@ async def resend_verification_otp(
 # LOGIN
 # -----------------------
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 async def login(
   data: LoginRequest,
   request: Request,
   db: AsyncSession = Depends(get_db)
 ):
   service = AuthService(db)
-  tokens = await service.login(
+  return await service.login(
     email=data.email,
     password=data.password,
     ip=request.client.host,
     user_agent=request.headers.get("user-agent")
   )
-
-  return {
-    "access_token": tokens[0],
-    "refresh_token": tokens[1]
-  }
 
 
 
@@ -99,20 +103,22 @@ async def login(
 @router.post("/forgot-password")
 async def forgot_password(
   data: ForgotPasswordRequest,
+  background_tasks: BackgroundTasks,
   db: AsyncSession = Depends(get_db)
 ):
   service = AuthService(db)
-  await service.forgot_password(data.email)
+  await service.forgot_password(data.email, background_tasks=background_tasks)
   return {"message": "OTP sent"}
 
 
 @router.post("/resend-reset-password-otp")
 async def resend_reset_password_otp(
   data: ResendOTPRequest,
+  background_tasks: BackgroundTasks,
   db: AsyncSession = Depends(get_db)
 ):
   service = AuthService(db)
-  await service.resend_reset_password_otp(data.email)
+  await service.resend_reset_password_otp(data.email, background_tasks=background_tasks)
   return {"message": "OTP resent"}
 
 
@@ -127,12 +133,12 @@ async def reset_password(
   db: AsyncSession = Depends(get_db)
 ):
   service = AuthService(db)
-  success = await service.reset_password(
+  await service.reset_password(
     email=data.email,
     otp_code=data.otp_code,
     new_password=data.new_password
   )
-  return {"success": success}
+  return {"message": "Password reset"}
 
 
 
