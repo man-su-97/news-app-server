@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.middleware.internal_auth import InternalServiceMiddleware
 
 import app.models  # noqa: F401  — registers all ORM models before any query runs
 
@@ -47,6 +48,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(InternalServiceMiddleware)
 
 app.include_router(final_article_router, prefix="/final-articles", tags=["Feed"])
 app.include_router(filter_article_router, prefix="/filter-articles", tags=["Pipeline"])

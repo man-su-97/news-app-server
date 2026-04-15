@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # searched once, so real spend = number of distinct new articles, not run count.
     GOOGLE_SEARCH_MAX_PER_RUN: int = 10
 
+    INTERNAL_SERVICE_SECRET: str
+
     # AWS BEDROCK SECRETS
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_ACCESS_KEY: str
