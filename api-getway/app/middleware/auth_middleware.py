@@ -29,6 +29,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     # auth routes
     if path.startswith("/api/auth"):
       return await call_next(request)
+    if path.startswith("/api/auth/oauth"):
+      return await call_next(request)
 
     auth_header = request.headers.get("Authorization")
 

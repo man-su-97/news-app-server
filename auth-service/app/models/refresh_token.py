@@ -2,6 +2,8 @@ from datetime import datetime
 
 from sqlalchemy import String, ForeignKey, DateTime, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
 
 from app.models.base import Base
 from app.models.mixins import TimestampMixin
@@ -11,7 +13,8 @@ class RefreshToken(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    user_id: Mapped[int] = mapped_column(
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("user.id", ondelete="CASCADE")
     )
 

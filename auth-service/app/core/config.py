@@ -18,6 +18,13 @@ class Settings(BaseSettings):
   SENDER_EMAIL: str
   SENDER_PASSWORD: str
 
+  # Google client secret
+  GOOGLE_CLIENT_ID: str
+  GOOGLE_CLIENT_SECRET: str
+
+  # Session secret
+  SESSION_SECRET_KEY: str
+
   model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
