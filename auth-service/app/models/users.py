@@ -1,5 +1,7 @@
-from sqlalchemy import String, Boolean, Enum
+from sqlalchemy import String, Boolean, Enum, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
 from typing import List
 
 from app.models.base import Base
@@ -9,7 +11,12 @@ from app.core.enums import UserRole, UserStatus
 
 class User(Base, TimestampMixin):
 
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        primary_key=True,
+        default=uuid.uuid4,
+        index=True
+    )
 
     email: Mapped[str] = mapped_column(
         String(255),
@@ -20,7 +27,7 @@ class User(Base, TimestampMixin):
 
     password_hash: Mapped[str] = mapped_column(
         String(255),
-        nullable=False
+        nullable=True
     )
 
     full_name: Mapped[str] = mapped_column(
@@ -41,6 +48,26 @@ class User(Base, TimestampMixin):
     status: Mapped[UserStatus] = mapped_column(
         Enum(UserStatus),
         default=UserStatus.PENDING
+    )
+
+    dob: Mapped[str] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    gender: Mapped[str] = mapped_column(
+        String(255),
+        nullable=True
+    )
+
+    provider: Mapped[str] = mapped_column(
+        String(255),
+        nullable=True
+    )
+
+    provider_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=True
     )
 
     # relationships

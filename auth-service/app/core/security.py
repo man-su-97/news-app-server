@@ -38,7 +38,7 @@ def create_access_token(user: User, expires_minutes: int = 30):
   """
   expire = datetime.now(tz=timezone.utc) + timedelta(minutes=expires_minutes)
   payload = {
-    "user_id": user.id,
+    "user_id": str(user.id),
     "email": user.email,
     "role": user.role, 
     "exp": expire
