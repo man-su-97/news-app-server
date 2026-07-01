@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes_ai import router as ai_router
 from app.api.routes_articles import router as article_router
 from app.api.routes_ingest import router as ingest_router
 from app.api.routes_sources import router as source_router
@@ -25,6 +26,7 @@ app.add_middleware(
 app.include_router(source_router, prefix="/sources", tags=["Sources"])
 app.include_router(article_router, prefix="/articles", tags=["Articles"])
 app.include_router(ingest_router, prefix="/ingest", tags=["Ingestion"])
+app.include_router(ai_router, prefix="/ai", tags=["AI"])
 
 
 @app.get("/health", tags=["Health"])

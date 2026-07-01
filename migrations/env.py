@@ -12,6 +12,7 @@ from alembic import context
 # ---------------------------------------------------------------------------
 from app.models.base import Base  # noqa: E402
 import app.models.article  # noqa: F401, E402
+import app.models.article_chunk  # noqa: F401, E402
 import app.models.source  # noqa: F401, E402
 
 from app.core.config import settings  # noqa: E402

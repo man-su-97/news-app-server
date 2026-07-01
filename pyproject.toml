@@ -15,11 +15,22 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "sqlalchemy>=2.0.46",
     "uvicorn>=0.41.0",
+    # AI News Intelligence layer
+    "openai>=1.54.0",
+    "pgvector>=0.3.6",
+    "langchain>=0.3.7",
+    "langchain-openai>=0.2.8",
+    "langgraph>=0.2.45",
+    "redis>=5.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "black>=26.1.0",
     "pytest>=9.0.2",
+    "pytest-asyncio>=0.24.0",
     "ruff>=0.15.1",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

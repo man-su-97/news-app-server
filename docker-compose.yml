@@ -1,0 +1,30 @@
+# Local development stack: backing services only (Postgres + Redis), exposed on
+# localhost so you can run the API on the host with `uv run uvicorn app.main:app
+# --reload` using `.env.local`. For the full containerised stack, use
+# docker-compose.prod.yml.
+services:
+  db:
+    # pgvector/pgvector ships Postgres with the `vector` extension preinstalled.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: news
+      POSTGRES_PASSWORD: news
+      POSTGRES_DB: news
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U news -d news"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    # Backs AI-endpoint rate limiting. The app fails open if this is absent.
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

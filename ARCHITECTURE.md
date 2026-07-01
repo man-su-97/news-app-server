@@ -25,6 +25,7 @@ anyone reading or extending this codebase.
 7. [Database Schema](#7-database-schema)
 8. [Dependency Graph](#8-dependency-graph)
 9. [Development Commands](#9-development-commands)
+10. [AI News Intelligence Layer (RAG)](#10-ai-news-intelligence-layer-rag)
 
 ---
 
@@ -54,6 +55,16 @@ A backend that:
 | **uvicorn** | 0.41+ | ASGI server | Required to run FastAPI; supports `--reload` for development |
 | **uv** | — | Package manager | Faster than pip; lockfile-based reproducible installs |
 
+### AI layer (see [section 10](#10-ai-news-intelligence-layer-rag))
+
+| Library | Version | Role | Why chosen |
+|---------|---------|------|------------|
+| **openai** | 1.54+ | Embeddings + LLM API | `text-embedding-3-small` for vectors, `gpt-4o-mini` for generation; single SDK, cheap, ubiquitous |
+| **pgvector** | 0.3+ | Vector storage/search in Postgres | Reuse existing Postgres, transactional with `articles`, no extra infra; HNSW + cosine |
+| **langchain** | 0.3+ | RAG chain (prompt + LLM plumbing) | Standard framework; keeps generation swappable |
+| **langchain-openai** | 0.2+ | LangChain ↔ OpenAI adapter | `ChatOpenAI` async chat model |
+| **langgraph** | 0.2+ | Agent state machine (Phase 2) | Controllable, stateful tool-use loop |
+
 ---
 
 ## 3. Directory Structure
@@ -61,18 +72,28 @@ A backend that:
 ```
 news_app_backend/
 │
-├── .env                          # Environment variables (DATABASE_URL, DEBUG)
+├── .env                          # Environment variables (DATABASE_URL, DEBUG, OPENAI_API_KEY, ...)
+├── .env.example                  # Template for .env
 ├── .python-version               # Pins Python 3.12 for uv/pyenv
 ├── pyproject.toml                # Project metadata and dependency declarations
 ├── uv.lock                       # Exact locked dependency versions
 ├── alembic.ini                   # Alembic configuration file
+├── docker-compose.yml            # Postgres + pgvector + redis for local dev
+├── docker-compose.prod.yml       # Full stack (api + db + redis) for production
+├── Dockerfile                    # API image
 ├── ARCHITECTURE.md               # This document
+│
+├── docs/design/                  # Design docs
+│   └── ai-news-intelligence.md
+│
+├── tests/                        # Pytest suite (chunking + RAG service, fakes)
 │
 ├── migrations/                   # Alembic migration scripts
 │   ├── env.py                    # Async-aware migration runner
 │   ├── script.py.mako            # Template for new migration files
 │   └── versions/
-│       └── 29df1b34a087_initial_schema.py   # Initial tables migration
+│       ├── 29df1b34a087_initial_schema.py         # Initial tables migration
+│       └── a1b2c3d4e5f6_article_chunks_pgvector.py # pgvector + article_chunks
 │
 └── app/                          # Application package
     ├── __init__.py               # Empty — marks app as a Python package
@@ -86,27 +107,38 @@ news_app_backend/
     ├── models/                   # SQLAlchemy ORM table definitions
     │   ├── base.py               # Shared DeclarativeBase all models inherit from
     │   ├── source.py             # Source table (RSS feeds / REST APIs registered)
-    │   └── article.py            # Article table (normalised article storage)
+    │   ├── article.py            # Article table (normalised article storage)
+    │   └── article_chunk.py      # ArticleChunk table (chunk text + vector embedding)
     │
     ├── repositories/             # Database access — only SELECT/INSERT/UPDATE/DELETE
     │   ├── source_repo.py        # CRUD for sources table
-    │   └── article_repo.py       # Upsert + queries for articles table
+    │   ├── article_repo.py       # Upsert + queries for articles table
+    │   └── chunk_repo.py         # Chunk writes + pgvector cosine search
     │
     ├── schemas/                  # Pydantic contracts for request bodies and responses
     │   ├── source_schema.py      # SourceCreate (input), SourceResponse (output)
-    │   └── article_schema.py     # ArticleResponse, ArticleListResponse
+    │   ├── article_schema.py     # ArticleResponse, ArticleListResponse
+    │   └── ai_schema.py          # Index/Search/Ask request + response contracts
     │
     ├── services/                 # Business logic and orchestration
     │   ├── ingestion_service.py  # Orchestrates fetch → normalise → store pipeline
     │   ├── source_normalizer.py  # Converts raw RSS/REST data into canonical dict
-    │   └── fetchers/
-    │       ├── rss_fetcher.py    # Fetches and parses RSS feeds
-    │       └── rest_fetcher.py   # Fetches JSON from REST news APIs
+    │   ├── fetchers/
+    │   │   ├── rss_fetcher.py    # Fetches and parses RSS feeds
+    │   │   └── rest_fetcher.py   # Fetches JSON from REST news APIs
+    │   └── ai/                   # AI News Intelligence layer (RAG)
+    │       ├── chunking.py       # Hand-written recursive character chunker (pure)
+    │       ├── embeddings.py     # OpenAI embeddings wrapper (Embedder protocol)
+    │       ├── indexing.py       # article → chunks → embeddings → DB (write side)
+    │       ├── retrieval.py      # query → embed → pgvector top-k (read side)
+    │       ├── llm.py            # LangChain ChatOpenAI wrapper (ChatCompleter)
+    │       └── rag_service.py    # retrieve → grounded prompt → answer + citations
     │
     └── api/                      # HTTP route handlers (thin controllers only)
         ├── routes_sources.py     # POST /sources, GET /sources, GET /sources/{id}
         ├── routes_articles.py    # GET /articles, GET /articles/{id}
-        └── routes_ingest.py      # POST /ingest/rss, POST /ingest/api
+        ├── routes_ingest.py      # POST /ingest/rss, POST /ingest/api
+        └── routes_ai.py          # POST /ai/index, /ai/search, /ai/ask
 ```
 
 ---
@@ -1010,3 +1042,187 @@ curl "http://localhost:8000/articles/1"
 # 6. Full API docs
 open http://localhost:8000/docs
 ```
+
+---
+
+## 10. AI News Intelligence Layer (RAG)
+
+A GenAI layer built **on top of** the ingestion pipeline. Once articles are in the
+database, this layer chunks them, embeds the chunks into vectors, stores them in
+Postgres via **pgvector**, and answers natural-language questions with a
+retrieval-augmented-generation (RAG) pipeline that cites its sources.
+
+It follows the same layered rules as the rest of the app (models → repositories →
+services → api) and lives under `app/services/ai/`. It is built in phases; this
+document covers **Phase 1** (semantic search + RAG Q&A). Phases 2–4 (LangGraph
+agent, safety guardrails, RAGAS evaluation) are specified in
+`docs/design/ai-news-intelligence.md`.
+
+### 10.1 What RAG is (and what this implements)
+
+RAG = **Retrieval-Augmented Generation**. Instead of asking an LLM to answer from
+its trained-in memory (which hallucinates and has no knowledge of your fresh news),
+you *retrieve* the most relevant text from your own corpus and put it in the prompt,
+then ask the LLM to answer **only from that retrieved context**. Two halves:
+
+- **Write side (indexing):** article → chunk → embed → store vectors.
+- **Read side (query):** question → embed → vector search → assemble prompt → generate.
+
+### 10.2 Key design decisions (the "why X over Y")
+
+| Decision | Chosen | Why, and the alternative |
+|----------|--------|--------------------------|
+| Vector store | **pgvector** (in Postgres) | Reuses the DB we already run; embeddings stay transactionally consistent with `articles`; zero new infra. A dedicated ANN engine (Pinecone/Qdrant/Chroma/FAISS) wins only at tens of millions of vectors, which this corpus is nowhere near. |
+| Index type | **HNSW** (`vector_cosine_ops`) | High recall, no training step, handles incremental inserts as the feed grows. IVFFlat needs training on existing data and suits static corpora. |
+| Distance | **Cosine** | Sentence embeddings are direction-meaningful, not magnitude-meaningful. |
+| Embedding model | **text-embedding-3-small** (1536-dim) | ~1/5 the cost and lower latency than `-large`; recall is more than enough for short news text. |
+| Chunking | **Hand-written** recursive char splitter | So the strategy is fully understood and explainable, not a library black box. Overlap + natural-boundary cuts keep chunks coherent. |
+| Generation | **gpt-4o-mini** via LangChain `ChatOpenAI` | Cheap, fast, good enough for grounded summarisation; framework keeps it swappable. |
+| Hallucination defence | **Grounding + citations** | System prompt forbids outside knowledge and forces "I don't know" when context is empty; every context block is numbered and cited. |
+
+### 10.3 Data model — `app/models/article_chunk.py`
+
+The `article_chunks` table stores one row per chunk of an article, with its vector.
+
+```
+Column       Type          Constraints                     Purpose
+-----------  ------------  ------------------------------  ------------------------------------
+id           INTEGER       PK                              Surrogate key
+article_id   INTEGER       FK → articles.id CASCADE, idx   Parent article (deleting it removes chunks)
+chunk_index  INTEGER       NOT NULL                        Order of the chunk within the article
+content      TEXT          NOT NULL                        The chunk text (what gets embedded)
+embedding    vector(1536)  NOT NULL                        pgvector column — the embedding
+created_at   TIMESTAMPTZ   server_default NOW()            Audit timestamp
+                          UNIQUE(article_id, chunk_index)  One row per (article, position)
+                          HNSW index on embedding          Approximate nearest-neighbour search
+```
+
+**Why the embedding dimension is fixed at 1536:** pgvector columns are typed with a
+fixed dimension. Switching to a different embedding model (e.g. a 3072-dim one)
+requires a migration to alter the column, so the dimension is a deliberate schema
+decision, not a runtime setting.
+
+### 10.4 Repository — `app/repositories/chunk_repo.py`
+
+The only place AI-layer SQL runs. Returns a `RetrievedChunk` dataclass (chunk joined
+to its article) so services never touch raw rows.
+
+| Method | SQL | Purpose |
+|--------|-----|---------|
+| `replace_for_article(article_id, chunks)` | `DELETE` then bulk `INSERT` | Idempotently (re)write all chunks for one article |
+| `get_unindexed_articles(limit)` | `SELECT ... WHERE id NOT IN (SELECT article_id FROM article_chunks)` | Find articles that still need embedding |
+| `search(query_embedding, k)` | `... ORDER BY embedding <=> :vec LIMIT k` | Top-k cosine nearest chunks, joined to article title/url |
+
+`<=>` is pgvector's cosine-distance operator; the HNSW index makes this an
+approximate-nearest-neighbour scan instead of a full table sort.
+
+### 10.5 Services — `app/services/ai/`
+
+Each unit has one job and takes its collaborators via the constructor (so tests can
+inject fakes — no network needed).
+
+- **`chunking.py`** — pure functions. `chunk_text(text, size, overlap)` slices long
+  text into overlapping windows, cutting at the latest natural boundary
+  (paragraph → line → sentence → word) near each window edge. `build_article_text()`
+  joins `title + description + content`. Fully unit-tested with no DB or API key.
+- **`embeddings.py`** — `OpenAIEmbedder` implements the `Embedder` protocol
+  (`embed_documents`, `embed_query`) over the OpenAI embeddings API.
+- **`indexing.py`** — `IndexingService.index_pending()` is the write side: pull
+  unindexed articles → chunk → batch-embed → store. Idempotent and per-article
+  error-isolated (one bad article never aborts the batch).
+- **`retrieval.py`** — `RetrievalService.search()` is the read side: embed the query,
+  return top-k `RetrievedChunk`s.
+- **`llm.py`** — `OpenAIChatCompleter` wraps LangChain `ChatOpenAI` behind a
+  `ChatCompleter` protocol (`complete(system, user)`).
+- **`rag_service.py`** — `RagService.ask()` orchestrates retrieve → number the
+  context blocks → grounded prompt → generate → return answer + citations. Returns
+  "I don't have relevant articles on that." (no LLM call) when retrieval is empty.
+
+### 10.6 Schemas & routes
+
+`app/schemas/ai_schema.py` defines the HTTP contracts; `app/api/routes_ai.py` are
+thin controllers wired through `app/core/deps.py`.
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/ai/index` | POST | Chunk + embed all not-yet-indexed articles |
+| `/ai/search` | POST | Semantic (vector) search → ranked chunks with similarity scores |
+| `/ai/ask` | POST | Grounded RAG answer with citations |
+
+**Config gate:** the AI dependency factories call `_require_openai_key()`. If
+`OPENAI_API_KEY` is unset, AI endpoints return **503** while the rest of the app
+keeps working — the base news API never depends on an API key.
+
+### 10.7 AI data flow
+
+```
+Indexing (write side)
+  POST /ai/index
+    ▼
+  IndexingService.index_pending()
+    │  chunk_repo.get_unindexed_articles()
+    │  for each article:
+    │     build_article_text()            → title + description + content
+    │     chunk_text()                     → overlapping chunks
+    │     embedder.embed_documents()       → OpenAI vectors
+    │     chunk_repo.replace_for_article() → INSERT vectors
+    ▼
+  {"indexed_articles": N, "indexed_chunks": M}
+
+Ask (read side / RAG)
+  POST /ai/ask {"question": "what did the central bank decide?"}
+    ▼
+  RagService.ask()
+    │  retrieval.search()
+    │     embedder.embed_query()           → query vector
+    │     chunk_repo.search()              → ORDER BY embedding <=> qvec LIMIT k
+    │  format numbered context [1]..[k]
+    │  chat.complete(system, user)         → grounded LLM answer
+    ▼
+  {"answer": "... [1][2]", "citations": [{ref, article_id, title, url}, ...]}
+```
+
+### 10.8 Testing
+
+- `tests/test_chunking.py` — pure unit tests for the chunker (size bounds, overlap,
+  boundaries, empty input, coverage). No DB or key required.
+- `tests/test_rag_service.py` — RAG grounding/citation behaviour with a fake
+  retrieval and fake chat model (verifies the empty-context path skips the LLM and
+  that citations track the retrieved chunks).
+- Run: `uv run pytest`.
+
+### 10.9 Running the AI layer
+
+```bash
+docker compose up -d db          # Postgres 16 + pgvector
+cp .env.example .env             # set OPENAI_API_KEY
+uv sync
+uv run alembic upgrade head      # creates article_chunks + enables pgvector
+
+uv run uvicorn app.main:app --reload
+
+# 1. Register a source + ingest (see section 9) so `articles` has rows
+# 2. Embed them
+curl -X POST http://localhost:8000/ai/index
+# → {"indexed_articles":42,"indexed_chunks":118}
+
+# 3. Semantic search
+curl -X POST http://localhost:8000/ai/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"interest rate decision","k":5}'
+
+# 4. Ask a grounded question
+curl -X POST http://localhost:8000/ai/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What did the central bank decide this week?"}'
+# → {"answer":"... [1][2]","citations":[...]}
+```
+
+### 10.10 Roadmap (later phases)
+
+- **Phase 2 — LangGraph agent:** a stateful tool-use graph with tools
+  (`semantic_search`, `get_article`, `summarize_topic`) at `POST /ai/agent`.
+- **Phase 3 — Safety:** prompt-injection detection + PII redaction wrapping the AI
+  endpoints.
+- **Phase 4 — Evaluation & observability:** a RAGAS golden-set harness (faithfulness,
+  context precision/recall) plus token-usage and latency logging.

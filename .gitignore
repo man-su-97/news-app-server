@@ -8,5 +8,12 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Environment files (never commit real secrets; templates are allowed)
 .env
 .env.*
+!.env*.example
+
+# Editor config
+.vscode/
+.idea/
