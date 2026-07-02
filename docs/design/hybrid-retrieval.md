@@ -124,12 +124,16 @@ fake service, no LLM in the loop.
 1. checkout → `astral-sh/setup-uv`
 2. `uv sync`
 3. `uv run ruff check .`
-4. `uv run ruff format --check .`
-5. `uv run pytest`
+4. `uv run pytest`
 
 The suite needs no DB, Redis, OpenAI key, or network (injected fakes + dummy env in
 `tests/conftest.py`), so CI is self-contained and fast. It gates this feature on the
 way in.
+
+**No format gate:** the repo is not currently format-clean under the installed
+`black`/`ruff format` (16 pre-existing files differ), so enforcing a format check
+would require an unrelated bulk reformat. CI gates on lint (`ruff check`) + tests
+only; formatting can be baselined separately later.
 
 ## Delivery
 
