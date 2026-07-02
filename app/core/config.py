@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 150
     RETRIEVAL_TOP_K: int = 5
 
+    # Hybrid retrieval (vector + full-text fused by Reciprocal Rank Fusion).
+    RETRIEVAL_CANDIDATE_N: int = 50  # per-arm candidate pool before fusion
+    RRF_K: int = 60  # RRF damping constant
+
     # Token optimisation for the RAG /ai/ask path.
     LLM_MAX_TOKENS: int = 512  # cap answer length (output tokens)
     RETRIEVAL_MIN_SCORE: float = 0.2  # drop chunks below this cosine similarity

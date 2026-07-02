@@ -14,7 +14,7 @@ from tests.conftest import FakeRedis
 
 
 class FakeRetrieval:
-    async def search(self, query, k=None):
+    async def search(self, query, k=None, mode="vector", filters=None):
         return []
 
 
@@ -32,6 +32,31 @@ def test_ai_search_second_call_is_rate_limited(monkeypatch):
         assert first.status_code == 200
         assert second.status_code == 429
         assert "Try again in" in second.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_search_inverted_date_range_returns_422(monkeypatch):
+    # Body validation (published_from > published_to) fails before the service
+    # is used, so a stub retrieval never gets called.
+    monkeypatch.setattr(settings, "RATE_LIMIT_SEARCH_PER_MIN", 100)
+    shared_redis = FakeRedis()
+    app.dependency_overrides[get_redis] = lambda: shared_redis
+    app.dependency_overrides[get_retrieval_service] = lambda: FakeRetrieval()
+    try:
+        client = TestClient(app)
+        resp = client.post(
+            "/ai/search",
+            json={
+                "query": "markets",
+                "mode": "hybrid",
+                "filters": {
+                    "published_from": "2026-07-02T00:00:00",
+                    "published_to": "2026-07-01T00:00:00",
+                },
+            },
+        )
+        assert resp.status_code == 422
     finally:
         app.dependency_overrides.clear()
 
