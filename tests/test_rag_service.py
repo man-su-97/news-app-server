@@ -12,9 +12,13 @@ class FakeRetrieval:
     def __init__(self, chunks):
         self._chunks = chunks
         self.last_query = None
+        self.last_mode = None
+        self.last_filters = None
 
-    async def search(self, query, k=None):
+    async def search(self, query, k=None, mode="vector", filters=None):
         self.last_query = query
+        self.last_mode = mode
+        self.last_filters = filters
         return self._chunks
 
 

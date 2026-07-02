@@ -1,4 +1,29 @@
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+SearchMode = Literal["vector", "hybrid"]
+
+
+class RetrievalFiltersIn(BaseModel):
+    """Metadata filters accepted at the API edge. Mapped to the plain
+    `RetrievalFilters` dataclass before reaching the service/repository."""
+
+    source_id: int | None = None
+    source_name: str | None = None
+    published_from: datetime | None = None
+    published_to: datetime | None = None
+
+    @model_validator(mode="after")
+    def _check_range(self) -> "RetrievalFiltersIn":
+        if (
+            self.published_from is not None
+            and self.published_to is not None
+            and self.published_from > self.published_to
+        ):
+            raise ValueError("published_from must be <= published_to")
+        return self
 
 
 class IndexRequest(BaseModel):
@@ -14,6 +39,8 @@ class IndexResponse(BaseModel):
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
     k: int | None = Field(default=None, ge=1, le=50)
+    mode: SearchMode = "vector"
+    filters: RetrievalFiltersIn | None = None
 
 
 class SearchResultItem(BaseModel):
@@ -33,6 +60,8 @@ class SearchResponse(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
     k: int | None = Field(default=None, ge=1, le=50)
+    mode: SearchMode = "vector"
+    filters: RetrievalFiltersIn | None = None
 
 
 class CitationOut(BaseModel):

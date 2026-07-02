@@ -13,6 +13,7 @@ from app.core.rate_limit import (
     ai_index_rate_limit,
     ai_search_rate_limit,
 )
+from app.repositories.chunk_repo import RetrievalFilters
 from app.schemas.ai_schema import (
     AgentRequest,
     AgentResponse,
@@ -21,6 +22,7 @@ from app.schemas.ai_schema import (
     CitationOut,
     IndexRequest,
     IndexResponse,
+    RetrievalFiltersIn,
     SearchRequest,
     SearchResponse,
     SearchResultItem,
@@ -33,6 +35,18 @@ from app.services.ai.retrieval import RetrievalService
 router = APIRouter()
 
 _SNIPPET_LEN = 240
+
+
+def _to_filters(f: RetrievalFiltersIn | None) -> RetrievalFilters | None:
+    """Map the validated API filter model to the plain repository dataclass."""
+    if f is None:
+        return None
+    return RetrievalFilters(
+        source_id=f.source_id,
+        source_name=f.source_name,
+        published_from=f.published_from,
+        published_to=f.published_to,
+    )
 
 
 @router.post(
@@ -62,8 +76,10 @@ async def semantic_search(
     body: SearchRequest,
     service: RetrievalService = Depends(get_retrieval_service),
 ):
-    """Semantic (vector) search over article chunks."""
-    chunks = await service.search(body.query, k=body.k)
+    """Semantic search over article chunks — vector or hybrid, with filters."""
+    chunks = await service.search(
+        body.query, k=body.k, mode=body.mode, filters=_to_filters(body.filters)
+    )
     return SearchResponse(
         query=body.query,
         results=[
@@ -110,7 +126,9 @@ async def ask(
 ):
     """Grounded RAG answer with citations over the news corpus."""
     question = enforce_input_safety(body.question)
-    result = await service.ask(question, k=body.k)
+    result = await service.ask(
+        question, k=body.k, mode=body.mode, filters=_to_filters(body.filters)
+    )
     return AskResponse(
         question=body.question,
         answer=result.answer,

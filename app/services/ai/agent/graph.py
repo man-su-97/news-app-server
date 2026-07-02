@@ -10,6 +10,7 @@ repository, and chat model, so tools operate on the current DB session.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from app.repositories.article_repo import ArticleRepository
 from app.services.ai.agent.tools import get_article_tool, semantic_search_tool
@@ -21,6 +22,20 @@ _SYSTEM_PROMPT = (
     "`get_article` to read a specific article by its id. Answer only from what the "
     "tools return; if you cannot find relevant articles, say so. Be concise."
 )
+
+
+def _parse_published_after(value: str | None) -> datetime | None:
+    """Parse an ISO date/datetime the model supplies; ignore malformed input.
+
+    Lenient on purpose — a bad date from the LLM should drop the recency filter,
+    never crash the tool call.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -45,9 +60,17 @@ class AgentService:
         from langchain_core.tools import StructuredTool
         from langgraph.prebuilt import create_react_agent
 
-        async def semantic_search(query: str) -> str:
-            """Search the news corpus for articles relevant to a query."""
-            return await semantic_search_tool(retrieval, query)
+        async def semantic_search(
+            query: str, published_after: str | None = None
+        ) -> str:
+            """Search the news corpus for articles relevant to a query.
+
+            Optionally pass published_after as an ISO date (e.g. "2026-06-25")
+            to restrict results to articles published on or after that date.
+            """
+            return await semantic_search_tool(
+                retrieval, query, published_after=_parse_published_after(published_after)
+            )
 
         async def get_article(article_id: int) -> str:
             """Read a single news article by its numeric id."""

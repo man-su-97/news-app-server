@@ -65,7 +65,13 @@ async def get_retrieval_service(
     chunk_repo: ChunkRepository = Depends(get_chunk_repo),
     embedder: Embedder = Depends(get_embedder),
 ) -> RetrievalService:
-    return RetrievalService(chunk_repo, embedder, top_k=settings.RETRIEVAL_TOP_K)
+    return RetrievalService(
+        chunk_repo,
+        embedder,
+        top_k=settings.RETRIEVAL_TOP_K,
+        candidate_n=settings.RETRIEVAL_CANDIDATE_N,
+        rrf_k=settings.RRF_K,
+    )
 
 
 async def get_rag_service(

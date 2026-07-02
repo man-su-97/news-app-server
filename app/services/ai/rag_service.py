@@ -10,9 +10,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from app.repositories.chunk_repo import RetrievedChunk
+from app.repositories.chunk_repo import RetrievalFilters, RetrievedChunk
 from app.services.ai.llm import ChatCompleter
-from app.services.ai.retrieval import RetrievalService
+from app.services.ai.retrieval import RetrievalService, SearchMode
 from app.services.ai.tokens import count_tokens
 
 # Matches inline citation markers like [1] or [12] in the model's answer.
@@ -103,8 +103,16 @@ class RagService:
             used += tokens
         return selected
 
-    async def ask(self, question: str, k: int | None = None) -> RagAnswer:
-        chunks = await self.retrieval.search(question, k=k or self.top_k)
+    async def ask(
+        self,
+        question: str,
+        k: int | None = None,
+        mode: SearchMode = "vector",
+        filters: RetrievalFilters | None = None,
+    ) -> RagAnswer:
+        chunks = await self.retrieval.search(
+            question, k=k or self.top_k, mode=mode, filters=filters
+        )
         selected = self._select_chunks(chunks)
         if not selected:
             # Nothing relevant survived → skip the LLM call entirely.
