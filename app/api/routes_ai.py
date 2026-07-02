@@ -1,16 +1,21 @@
 from fastapi import APIRouter, Depends
 
+from app.api.safety_guard import enforce_input_safety
 from app.core.deps import (
+    get_agent_service,
     get_indexing_service,
     get_rag_service,
     get_retrieval_service,
 )
 from app.core.rate_limit import (
+    ai_agent_rate_limit,
     ai_ask_rate_limit,
     ai_index_rate_limit,
     ai_search_rate_limit,
 )
 from app.schemas.ai_schema import (
+    AgentRequest,
+    AgentResponse,
     AskRequest,
     AskResponse,
     CitationOut,
@@ -20,6 +25,7 @@ from app.schemas.ai_schema import (
     SearchResponse,
     SearchResultItem,
 )
+from app.services.ai.agent.graph import AgentService
 from app.services.ai.indexing import IndexingService
 from app.services.ai.rag_service import RagService
 from app.services.ai.retrieval import RetrievalService
@@ -75,6 +81,25 @@ async def semantic_search(
 
 
 @router.post(
+    "/agent",
+    response_model=AgentResponse,
+    dependencies=[Depends(ai_agent_rate_limit)],
+)
+async def agent(
+    body: AgentRequest,
+    service: AgentService = Depends(get_agent_service),
+):
+    """Multi-step LangGraph agent: searches/reads articles via tools, then answers."""
+    question = enforce_input_safety(body.question)
+    result = await service.run(question)
+    return AgentResponse(
+        question=body.question,
+        answer=result.answer,
+        tools_used=result.tools_used,
+    )
+
+
+@router.post(
     "/ask",
     response_model=AskResponse,
     dependencies=[Depends(ai_ask_rate_limit)],
@@ -84,7 +109,8 @@ async def ask(
     service: RagService = Depends(get_rag_service),
 ):
     """Grounded RAG answer with citations over the news corpus."""
-    result = await service.ask(body.question, k=body.k)
+    question = enforce_input_safety(body.question)
+    result = await service.ask(question, k=body.k)
     return AskResponse(
         question=body.question,
         answer=result.answer,

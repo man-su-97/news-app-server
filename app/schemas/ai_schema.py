@@ -46,3 +46,13 @@ class AskResponse(BaseModel):
     question: str
     answer: str
     citations: list[CitationOut]
+
+
+class AgentRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+
+
+class AgentResponse(BaseModel):
+    question: str
+    answer: str
+    tools_used: list[str]

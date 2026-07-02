@@ -15,9 +15,9 @@ language, with answers grounded in and cited from the underlying articles.
 | Grounded Q&A with citations + refusal on empty retrieval | Built (Phase 1) |
 | LLM token optimisation (threshold, context budget, output cap, usage logging) | Built |
 | Rate limiting on AI endpoints | Built |
-| Agentic tool-use loop (LangGraph) | Planned (Phase 2) |
-| Prompt-injection mitigation + PII redaction | Planned (Phase 3) |
-| RAG evaluation (RAGAS) + observability | Planned (Phase 4) |
+| Agentic tool-use loop (LangGraph) | Built (Phase 2) |
+| Prompt-injection mitigation + PII redaction | Built (Phase 3) |
+| RAG evaluation (retrieval metrics + optional RAGAS) + observability | Built (Phase 4) |
 
 ## Provider & framework decisions
 

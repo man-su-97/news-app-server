@@ -73,7 +73,8 @@ A backend that:
 news_app_backend/
 │
 ├── .env                          # Environment variables (DATABASE_URL, DEBUG, OPENAI_API_KEY, ...)
-├── .env.example                  # Template for .env
+├── .env.local.example            # Local dev env template
+├── .env.prod.example             # Production env template
 ├── .python-version               # Pins Python 3.12 for uv/pyenv
 ├── pyproject.toml                # Project metadata and dependency declarations
 ├── uv.lock                       # Exact locked dependency versions
@@ -1148,6 +1149,7 @@ thin controllers wired through `app/core/deps.py`.
 | `/ai/index` | POST | Chunk + embed all not-yet-indexed articles |
 | `/ai/search` | POST | Semantic (vector) search → ranked chunks with similarity scores |
 | `/ai/ask` | POST | Grounded RAG answer with citations |
+| `/ai/agent` | POST | LangGraph agent that uses tools (search/read) to answer |
 
 **Config gate:** the AI dependency factories call `_require_openai_key()`. If
 `OPENAI_API_KEY` is unset, AI endpoints return **503** while the rest of the app
@@ -1184,22 +1186,23 @@ Ask (read side / RAG)
 
 ### 10.8 Testing
 
-- `tests/test_chunking.py` — pure unit tests for the chunker (size bounds, overlap,
-  boundaries, empty input, coverage). No DB or key required.
-- `tests/test_rag_service.py` — RAG grounding/citation behaviour with a fake
-  retrieval and fake chat model (verifies the empty-context path skips the LLM and
-  that citations track the retrieved chunks).
+- `tests/test_chunking.py` — pure unit tests for the chunker.
+- `tests/test_rag_service.py` — RAG grounding/citation + token-optimisation behaviour.
+- `tests/test_agent_tools.py` — agent tools verified in isolation (no LLM).
+- `tests/test_safety.py` — prompt-injection detection, PII redaction, the 400 guard.
+- `tests/test_eval_metrics.py` — precision@k / recall@k / MRR + golden-set harness.
+- `tests/test_ai_routes.py` — rate limiting (429) + input validation (422).
 - Run: `uv run pytest`.
 
 ### 10.9 Running the AI layer
 
 ```bash
-docker compose up -d db          # Postgres 16 + pgvector
-cp .env.example .env             # set OPENAI_API_KEY
+docker compose up -d             # Postgres (pgvector) + Redis
+cp .env.local.example .env.local # set OPENAI_API_KEY
 uv sync
 uv run alembic upgrade head      # creates article_chunks + enables pgvector
 
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --env-file .env.local
 
 # 1. Register a source + ingest (see section 9) so `articles` has rows
 # 2. Embed them
@@ -1216,13 +1219,27 @@ curl -X POST http://localhost:8000/ai/ask \
   -H "Content-Type: application/json" \
   -d '{"question":"What did the central bank decide this week?"}'
 # → {"answer":"... [1][2]","citations":[...]}
+
+# 5. Multi-step agent (uses tools)
+curl -X POST http://localhost:8000/ai/agent \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Find recent articles on rate hikes and summarise them"}'
+# → {"answer":"...","tools_used":["semantic_search", ...]}
 ```
 
-### 10.10 Roadmap (later phases)
+### 10.10 Agent, safety, and evaluation (Phases 2–4, built)
 
-- **Phase 2 — LangGraph agent:** a stateful tool-use graph with tools
-  (`semantic_search`, `get_article`, `summarize_topic`) at `POST /ai/agent`.
-- **Phase 3 — Safety:** prompt-injection detection + PII redaction wrapping the AI
-  endpoints.
-- **Phase 4 — Evaluation & observability:** a RAGAS golden-set harness (faithfulness,
-  context precision/recall) plus token-usage and latency logging.
+- **Phase 2 — LangGraph agent** (`app/services/ai/agent/`): a LangGraph ReAct agent
+  (`create_react_agent`) with tools `semantic_search` and `get_article`, exposed at
+  `POST /ai/agent`. Tools are plain async functions (`tools.py`) so they are
+  unit-tested without an LLM; `AGENT_MAX_ITERATIONS` bounds the loop via
+  `recursion_limit`.
+- **Phase 3 — Safety** (`app/services/ai/safety/` + `app/api/safety_guard.py`):
+  pure prompt-injection detection and regex PII redaction; the API guard blocks
+  injection with **400** and redacts PII from `/ai/ask` + `/ai/agent` inputs
+  (toggle `SAFETY_ENABLED`).
+- **Phase 4 — Evaluation & observability** (`app/services/ai/eval/`,
+  `scripts/`): deterministic retrieval metrics (precision@k, recall@k, MRR) over a
+  golden set (`scripts/eval_retrieval.py`), optional RAGAS generation scoring
+  (`scripts/eval_ragas.py`, `uv sync --extra eval`), and per-call latency + token
+  logging in `OpenAIChatCompleter`.

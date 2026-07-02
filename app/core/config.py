@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_INDEX_PER_MIN: int = 5
     RATE_LIMIT_SEARCH_PER_MIN: int = 30
     RATE_LIMIT_ASK_PER_MIN: int = 20
+    RATE_LIMIT_AGENT_PER_MIN: int = 15
+
+    # LangGraph agent
+    AGENT_MAX_ITERATIONS: int = 6
+
+    # Safety: block prompt-injection attempts and redact PII from AI inputs.
+    SAFETY_ENABLED: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

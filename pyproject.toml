@@ -24,6 +24,14 @@ dependencies = [
     "redis>=5.0.0",
 ]
 
+[project.optional-dependencies]
+# Generation-quality evaluation (RAGAS). Heavy; not needed to run the app.
+#   uv sync --extra eval
+eval = [
+    "ragas>=0.2.0",
+    "datasets>=3.0.0",
+]
+
 [dependency-groups]
 dev = [
     "black>=26.1.0",
