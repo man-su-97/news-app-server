@@ -9,6 +9,9 @@ retrieval-augmented generation (RAG).
   into a canonical `Article`, deduplicate by URL.
 - **Semantic search**: embed articles (OpenAI `text-embedding-3-small`) into
   **pgvector** and search by cosine similarity (HNSW index).
+- **Hybrid search + metadata filters**: opt-in `mode: "hybrid"` fuses vector search
+  with Postgres full-text (`tsvector` + GIN) via Reciprocal Rank Fusion; filter by
+  source and published-date range on `/ai/search`, `/ai/ask`, and the agent tool.
 - **Grounded Q&A (RAG)**: answer questions using only retrieved articles, with
   inline `[n]` citations; refuses when nothing relevant is found.
 - **Agent**: a LangGraph tool-using agent that searches and reads articles to
@@ -22,7 +25,8 @@ retrieval-augmented generation (RAG).
 
 For a file-by-file deep dive, see [`ARCHITECTURE.md`](ARCHITECTURE.md); for the
 AI-layer design and trade-offs, see
-[`docs/design/ai-news-intelligence.md`](docs/design/ai-news-intelligence.md).
+[`docs/design/ai-news-intelligence.md`](docs/design/ai-news-intelligence.md) and
+[`docs/design/hybrid-retrieval.md`](docs/design/hybrid-retrieval.md).
 
 ## Tech stack
 
