@@ -1,7 +1,16 @@
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Computed,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -21,6 +30,13 @@ class ArticleChunk(Base):
     chunk_index: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
+    # Generated-stored tsvector for the lexical arm of hybrid search. Computed by
+    # Postgres from `content`; never written by the ORM. See migration b2c3d4e5f6a7.
+    content_tsv: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', content)", persisted=True),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
