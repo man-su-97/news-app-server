@@ -6,9 +6,10 @@ from app.core.database import get_db
 from app.repositories.article_repo import ArticleRepository
 from app.repositories.chunk_repo import ChunkRepository
 from app.repositories.source_repo import SourceRepository
+from app.services.ai.agent.graph import AgentService
 from app.services.ai.embeddings import Embedder, OpenAIEmbedder
 from app.services.ai.indexing import IndexingService
-from app.services.ai.llm import OpenAIChatCompleter
+from app.services.ai.llm import OpenAIChatCompleter, build_chat_model
 from app.services.ai.rag_service import RagService
 from app.services.ai.retrieval import RetrievalService
 from app.services.ingestion_service import IngestionService
@@ -81,4 +82,21 @@ async def get_rag_service(
         top_k=settings.RETRIEVAL_TOP_K,
         min_score=settings.RETRIEVAL_MIN_SCORE,
         max_context_tokens=settings.MAX_CONTEXT_TOKENS,
+    )
+
+
+async def get_agent_service(
+    retrieval: RetrievalService = Depends(get_retrieval_service),
+    article_repo: ArticleRepository = Depends(get_article_repo),
+) -> AgentService:
+    chat_model = build_chat_model(
+        api_key=_require_openai_key(),
+        model=settings.LLM_MODEL,
+        max_tokens=settings.LLM_MAX_TOKENS,
+    )
+    return AgentService(
+        chat_model,
+        retrieval,
+        article_repo,
+        max_iterations=settings.AGENT_MAX_ITERATIONS,
     )

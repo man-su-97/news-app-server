@@ -11,9 +11,14 @@ retrieval-augmented generation (RAG).
   **pgvector** and search by cosine similarity (HNSW index).
 - **Grounded Q&A (RAG)**: answer questions using only retrieved articles, with
   inline `[n]` citations; refuses when nothing relevant is found.
+- **Agent**: a LangGraph tool-using agent that searches and reads articles to
+  answer multi-step questions.
+- **Safety**: prompt-injection blocking and PII redaction on AI inputs.
+- **Evaluation**: retrieval metrics (precision/recall/MRR) over a golden set, plus
+  optional RAGAS generation scoring.
 - **Production-minded**: Redis rate limiting on AI endpoints, LLM token
-  optimisation (similarity threshold, context-token budget, output cap, usage
-  logging), and a layered, dependency-injected, test-covered codebase.
+  optimisation (similarity threshold, context-token budget, output cap, latency +
+  usage logging), and a layered, dependency-injected, test-covered codebase.
 
 For a file-by-file deep dive, see [`ARCHITECTURE.md`](ARCHITECTURE.md); for the
 AI-layer design and trade-offs, see
@@ -115,6 +120,14 @@ token-optimisation, and rate-limit settings.
 | POST | `/ai/index` | Chunk + embed not-yet-indexed articles (body: `{"limit": 1..100}`) |
 | POST | `/ai/search` | Semantic search → ranked chunks with similarity scores |
 | POST | `/ai/ask` | Grounded RAG answer with citations |
+| POST | `/ai/agent` | LangGraph agent that uses tools (search/read) to answer |
+
+Evaluation (needs a populated DB + key):
+
+```bash
+uv run python -m scripts.eval_retrieval   # precision@k / recall@k / MRR
+uv sync --extra eval && uv run python -m scripts.eval_ragas   # RAGAS (optional)
+```
 
 Typical flow: register a source → ingest → `POST /ai/index` → then `POST /ai/search`
 or `POST /ai/ask`.

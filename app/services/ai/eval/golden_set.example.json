@@ -1,0 +1,14 @@
+[
+  {
+    "question": "What did the central bank decide about interest rates?",
+    "relevant_article_ids": [1, 4]
+  },
+  {
+    "question": "Latest news on the general election results",
+    "relevant_article_ids": [7]
+  },
+  {
+    "question": "How are markets reacting to the earnings reports?",
+    "relevant_article_ids": [12, 15]
+  }
+]

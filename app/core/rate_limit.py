@@ -59,3 +59,4 @@ def rate_limit(bucket: str, per_min_attr: str):
 ai_index_rate_limit = rate_limit("ai_index", "RATE_LIMIT_INDEX_PER_MIN")
 ai_search_rate_limit = rate_limit("ai_search", "RATE_LIMIT_SEARCH_PER_MIN")
 ai_ask_rate_limit = rate_limit("ai_ask", "RATE_LIMIT_ASK_PER_MIN")
+ai_agent_rate_limit = rate_limit("ai_agent", "RATE_LIMIT_AGENT_PER_MIN")
